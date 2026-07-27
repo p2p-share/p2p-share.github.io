@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   base: "./",
+  optimizeDeps: {
+    exclude: ["@sqlite.org/sqlite-wasm", "@webcontainer/api", "webr", "php-wasm"],
+  },
   build: {
     target: "es2022",
     sourcemap: true,

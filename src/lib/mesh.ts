@@ -82,8 +82,9 @@ export class PeerMesh extends EventTarget {
   }
 
   private createConnection(id: string): Link {
-    // No STUN/TURN is intentional: host candidates keep signaling fully infrastructure-free.
-    const pc = new RTCPeerConnection({ iceServers: [] });
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
     const link: Link = { id, pc };
     const audio = pc.addTransceiver("audio", { direction: "sendrecv" });
     const video = pc.addTransceiver("video", { direction: "sendrecv" });
@@ -174,6 +175,55 @@ export class PeerMesh extends EventTarget {
       inviter: this.peerId,
       description: link.pc.localDescription,
     });
+  }
+
+  async createSignalingOffer(target: string) {
+    if (target === this.peerId || this.hasPeer(target)) return;
+    const offerId = crypto.randomUUID();
+    const link = this.createConnection(offerId);
+    link.remotePeerId = target;
+    const channel = link.pc.createDataChannel("p2p-share", { ordered: true });
+    this.attachChannel(link, channel);
+    await link.pc.setLocalDescription(await link.pc.createOffer());
+    await waitForIceGathering(link.pc);
+    this.offers.set(offerId, link);
+    const description = link.pc.localDescription!;
+    return {
+      offerId,
+      description: { type: description.type, sdp: description.sdp } satisfies RTCSessionDescriptionInit,
+    };
+  }
+
+  async acceptSignalingOffer(
+    offerId: string,
+    inviter: string,
+    description: RTCSessionDescriptionInit,
+  ) {
+    if (this.hasPeer(inviter)) return;
+    const link = this.createConnection(offerId);
+    link.remotePeerId = inviter;
+    await link.pc.setRemoteDescription(description);
+    await link.pc.setLocalDescription(await link.pc.createAnswer());
+    await waitForIceGathering(link.pc);
+    this.links.set(link.id, link);
+    const answer = link.pc.localDescription!;
+    return {
+      offerId,
+      description: { type: answer.type, sdp: answer.sdp } satisfies RTCSessionDescriptionInit,
+    };
+  }
+
+  async acceptSignalingAnswer(
+    offerId: string,
+    responder: string,
+    description: RTCSessionDescriptionInit,
+  ) {
+    await this.acceptPeerAnswer(offerId, responder, description);
+  }
+
+  reportError(message: string) {
+    console.error(`[p2p-share] ${message}`);
+    this.dispatchEvent(new CustomEvent("error", { detail: message }));
   }
 
   async acceptPeerOffer(

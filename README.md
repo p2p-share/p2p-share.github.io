@@ -8,20 +8,22 @@
 
 **Author:** [Mr-Jerry-Haxor](https://github.com/Mr-Jerry-Haxor)
 
-A private, static, peer-to-peer code room that runs entirely from GitHub Pages. It combines a CodeMirror editor, Yjs conflict-free collaboration, direct WebRTC data channels, optional password-derived AES-256-GCM encryption, arbitrary file transfer, and browser-local recovery.
+A private, static, peer-to-peer code room hosted by GitHub Pages. It combines a CodeMirror editor, Yjs conflict-free collaboration, direct WebRTC data channels, Firebase-assisted peer discovery, optional password-derived AES-256-GCM encryption, arbitrary file transfer, and browser-local recovery.
 
 ## What “serverless” means here
 
-p2p-share uses no application database, analytics endpoint, signaling service, STUN server, TURN relay, WebSocket server, tracker, or runtime CDN. The production bundle is self-contained. Optional, explicit Git publishing/import and Judge0 execution use the provider endpoint selected by the user; core editing, project tools, previews, storage, and collaboration do not.
+p2p-share uses Firebase Authentication and Cloud Firestore only to discover peers and exchange temporary WebRTC session descriptions. Code, files, chat, editor state, and media are never written to Firebase; they travel directly between peers and can be recovered from browser-local storage. A public STUN server assists NAT discovery. No TURN relay is currently configured.
 
-That architecture has one deliberate tradeoff: peers pair manually.
+Opening a compact room link with a 10-character cryptographically random room ID starts automatic multi-peer discovery:
 
-1. The host chooses **Share** and creates a one-time invite link.
-2. The guest opens the link and creates a connection answer.
-3. The guest sends the answer to the host through any channel they already trust.
-4. The host pastes the answer to complete the direct WebRTC connection.
+1. The visitor receives an anonymous Firebase identity.
+2. The browser registers an ephemeral participant in the room.
+3. Peers exchange offers and answers through a short-lived Firestore mailbox.
+4. Consumed signals are deleted and collaboration continues over direct WebRTC.
 
-Automatic “open one URL and appear in the room” discovery cannot be implemented on a static host without introducing a signaling service. Omitting STUN/TURN also means direct connections may fail across restrictive or symmetric NATs. This is the cost of a genuinely infrastructure-free runtime.
+Firebase is signaling infrastructure, so the application is no longer strictly infrastructure-free. STUN improves direct connectivity, but connections can still fail across restrictive or symmetric NATs until a TURN service is configured.
+
+Consumed signaling documents and intentional participant departures are deleted by the browser. Firestore TTL is intentionally not enabled in `firestore.indexes.json` because managed TTL deletion requires billing. Projects on the Blaze plan can opt in by adding TTL policies for the `expiresAt` field on the `rooms` and `signals` collection groups.
 
 ## Features
 
@@ -31,7 +33,7 @@ Automatic “open one URL and appear in the room” discovery cannot be implemen
 - Multi-peer WebRTC audio meetings and video conferences with mute, camera, and leave controls
 - Automatic in-room signaling expands the initial connection into a direct full mesh for conference media
 - Collaborative code runner with local, time-limited JavaScript/TypeScript execution
-- Optional Judge0 CE integration for Python, Java, C/C++, C#, Go, Rust, Kotlin, Swift, Ruby, PHP, and shell code
+- Browser-side runtimes for JavaScript/TypeScript, Python, Ruby, PHP, Lua, R, SQL, C/C++, Node.js projects, and frontend playgrounds
 - Shared run status, standard output, errors, author, and timing for every peer
 - Hidden-by-default version log with author, timestamp, exact affected lines, and inserted/deleted content
 - Collaborative multi-file tabs with per-file language detection and syntax highlighting
@@ -99,7 +101,7 @@ Browsers do not provide a reliable, decentralized way for closed tabs to prove t
 
 Audio and video use WebRTC media tracks over the same direct peer connections as collaboration. Camera and microphone access begins only after the user chooses an audio or video call. No media recorder is included, and media is not written to IndexedDB.
 
-JavaScript and TypeScript execute locally in a disposable Web Worker with a five-second timeout and network APIs disabled. Other languages require a Judge0 CE endpoint configured by the user. Before each remote run, p2p-share names the endpoint and asks for confirmation because the source code and standard input leave the peer network. For private deployments, self-host [Judge0 CE](https://github.com/judge0/judge0).
+Simple JavaScript and TypeScript execute in a disposable Web Worker with a five-second timeout and network APIs disabled. Python uses Pyodide, Ruby uses ruby.wasm, PHP uses PHP Wasm, Lua uses Fengari, R uses WebR, SQL uses an in-memory SQLite Wasm database, and C/C++ use Wasm Clang. Node.js projects with a `package.json` use WebContainers, while frontend projects use Sandpack. Runtime payloads are lazy-loaded on first use; C/C++, R, Ruby, and Python can have substantial first-run downloads. CheerpJ is identified for compiled Java `.class`/`.jar` artifacts, but Java source compilation is not currently provided.
 
 ## Calls, execution, and version logs
 

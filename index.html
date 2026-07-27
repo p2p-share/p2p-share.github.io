@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'nonce-p2p-share-schema'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; connect-src 'self' https:; worker-src 'self' blob:; frame-src 'self' blob:; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; upgrade-insecure-requests" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: https://cdn.jsdelivr.net 'wasm-unsafe-eval' 'nonce-p2p-share-schema'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; connect-src 'self' https:; worker-src 'self' blob:; frame-src 'self' blob: https://*.codesandbox.io https://*.csb.app; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; upgrade-insecure-requests" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>P2P Code Collaboration &amp; Video Calls | p2p-share</title>
     <meta name="description" content="Private peer-to-peer code editor with live collaboration, code sharing, group chat, video calls, file transfer, version logs and a browser code runner." />
@@ -72,7 +72,7 @@
               "Real-time peer-to-peer collaborative code editing",
               "WebRTC audio meetings and video conferencing",
               "Browser-based JavaScript and TypeScript code runner",
-              "Multi-language execution through optional Judge0 CE",
+              "Private browser-side execution for JavaScript, TypeScript, Python, Ruby, PHP, Lua, R, SQL, C and C++",
               "Peer group chat and line-level version attribution",
               "Direct file sharing up to 1 GB",
               "Optional password protection and local recovery",

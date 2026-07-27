@@ -36,7 +36,8 @@ import {
 } from "./lib/project";
 import { base64ToBytes, bytesToBase64 } from "./lib/encoding";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
-import { canRunLocally, emptyRunResult, runLocalCode, runWithJudge0 } from "./lib/runner";
+import { FirebaseSignaling, getFirebaseRoomSecurity, type FirebaseRoomSecurity } from "./lib/firebaseSignaling";
+import { emptyRunResult, runBrowserCode } from "./lib/runner";
 import type { InviteToken } from "./lib/signaling";
 import type { AccessMode, AnalysisReport, ChatMessage, CodeFileMeta, Presence, ProjectManifest, ReviewEntry, RoomRecord, RunResult, SharedFile, Transfer, VersionLog } from "./types";
 
@@ -58,6 +59,7 @@ type Session = {
   locked: boolean;
   salt?: string;
   tabs: CrossTabCoordinator;
+  signaling: FirebaseSignaling;
 };
 
 type BootState = {
@@ -65,6 +67,8 @@ type BootState = {
   record?: RoomRecord;
   invite?: InviteToken;
   inviteToken?: string;
+  access?: AccessMode;
+  firebaseSecurity?: FirebaseRoomSecurity;
 };
 
 type IncomingSink = {
@@ -86,19 +90,26 @@ const MAX_EDITOR_FILE_SIZE = 512 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
 const FILE_CHUNK_SIZE = 48 * 1024;
 const STREAM_IMPORT_ORIGIN = "stream-import";
+const ROOM_PASSWORD_MARKER = "p2p-share-room-password-v1";
 const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
 
 function newRoomId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(10));
-  return Array.from(bytes, (byte) => byte.toString(36).padStart(2, "0")).join("").slice(0, 14);
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "")
+    .slice(0, 10);
 }
 
 function parseHash() {
   return new URLSearchParams(location.hash.replace(/^#/, ""));
 }
 
-function roomUrl(roomId: string) {
-  return `${location.origin}${location.pathname}#room=${encodeURIComponent(roomId)}`;
+function roomUrl(roomId: string, access?: AccessMode) {
+  const params = new URLSearchParams({ room: roomId });
+  if (access) params.set("access", access);
+  return `${location.origin}${location.pathname}#${params}`;
 }
 
 function randomGuestName() {
@@ -237,7 +248,6 @@ export function App() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [previewFile, setPreviewFile] = useState<{ file: SharedFile; blob: Blob }>();
   const [toast, setToast] = useState("");
-  const [judgeEndpoint, setJudgeEndpoint] = useState(() => localStorage.getItem("sharecode:judge0-endpoint") || "");
   const [localStream, setLocalStream] = useState<MediaStream>();
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [callMode, setCallMode] = useState<"audio" | "video">();
@@ -258,6 +268,7 @@ export function App() {
   const activeText = session?.codeFiles.get(activeFileId) || session?.text;
   const activeMeta = session?.codeFileMeta.get(activeFileId);
   const accessMode: AccessMode = boot?.invite?.access
+    || boot?.access
     || (boot?.roomId ? sessionStorage.getItem(`p2p-share:access:${boot.roomId}`) as AccessMode : undefined)
     || "edit";
   const isReadOnly = accessMode === "read";
@@ -344,9 +355,15 @@ export function App() {
         });
       }
       const mainText = codeFiles.get("main")!;
-      const locked = Boolean(bootState.record?.locked || bootState.invite?.locked);
-      const salt = bootState.record?.salt || bootState.invite?.salt;
+      const locked = Boolean(bootState.record?.locked || bootState.invite?.locked || bootState.firebaseSecurity?.locked);
+      const salt = bootState.record?.salt || bootState.invite?.salt || bootState.firebaseSecurity?.salt;
       const mesh = new PeerMesh(bootState.roomId, key);
+      const signaling = new FirebaseSignaling(
+        bootState.roomId,
+        mesh,
+        () => localNameRef.current,
+        { locked, salt },
+      );
       const tabs = new CrossTabCoordinator(bootState.roomId);
       const availableIds: string[] = [];
       for (const [id, file] of files.entries()) {
@@ -359,7 +376,14 @@ export function App() {
       setLocalFiles(new Set(availableIds));
       setSession({
         roomId: bootState.roomId, doc, text: mainText, meta, files, messages, logs, runner,
-        codeFiles, codeFileMeta, reviews, description, mesh, key, locked, salt, tabs,
+        codeFiles, codeFileMeta, reviews, description, mesh, key, locked, salt, tabs, signaling,
+      });
+      void signaling.connect().catch((error) => {
+        mesh.reportError(
+          `Automatic connection is unavailable. Manual invites still work. ${
+            error instanceof Error ? error.message : ""
+          }`.trim(),
+        );
       });
       const recoverySetting = localStorage.getItem(`sharecode:recovery:${bootState.roomId}`) !== "off";
       setRecovery(recoverySetting);
@@ -380,9 +404,17 @@ export function App() {
         const invite = inviteToken ? await inspectInvite(inviteToken) : undefined;
         const roomId = invite?.roomId || params.get("room") || newRoomId();
         const record = await getRoom(roomId);
-        const state = { roomId, record, invite, inviteToken };
+        let firebaseSecurity: FirebaseRoomSecurity | undefined;
+        try {
+          firebaseSecurity = await getFirebaseRoomSecurity(roomId);
+        } catch {
+          // The existing manual invite path remains available when Firebase is unreachable.
+        }
+        const requestedAccess = params.get("access");
+        const access = requestedAccess === "read" ? "read" as const : requestedAccess === "edit" ? "edit" as const : undefined;
+        const state = { roomId, record, invite, inviteToken, access, firebaseSecurity };
         setBoot(state);
-        if (record?.locked || invite?.locked) {
+        if (record?.locked || invite?.locked || firebaseSecurity?.locked) {
           setUnlockOpen(true);
         } else {
           await startSession(state);
@@ -459,10 +491,15 @@ export function App() {
     };
   }, [persist, session, showToast]);
 
+  const sessionTabs = session?.tabs;
+  const sessionSignaling = session?.signaling;
   useEffect(() => {
-    if (!session) return;
-    return () => session.tabs.close();
-  }, [session]);
+    if (!sessionTabs || !sessionSignaling) return;
+    return () => {
+      sessionTabs.close();
+      sessionSignaling.disconnect();
+    };
+  }, [sessionSignaling, sessionTabs]);
 
   useEffect(() => {
     if (!session || !("serviceWorker" in navigator)) return;
@@ -687,9 +724,22 @@ export function App() {
     }
     setUnlockError("");
     try {
-      const salt = boot.record?.salt || boot.invite?.salt;
+      const salt = boot.record?.salt || boot.invite?.salt || boot.firebaseSecurity?.salt;
       if (!salt) throw new Error("This locked room is missing its encryption salt.");
       const key = await deriveRoomKey(unlockPassword, salt);
+      if (boot.firebaseSecurity?.verificationPayload) {
+        try {
+          const marker = await decryptBytes({
+            payload: boot.firebaseSecurity.verificationPayload,
+            iv: boot.firebaseSecurity.verificationIv,
+          }, key);
+          if (new TextDecoder().decode(marker) !== ROOM_PASSWORD_MARKER) {
+            throw new Error("Incorrect room password.");
+          }
+        } catch {
+          throw new Error("Incorrect room password.");
+        }
+      }
       await startSession(boot, key);
       setUnlockOpen(false);
       setUnlockPassword("");
@@ -703,9 +753,7 @@ export function App() {
     setShareBusy(true);
     setShareError("");
     try {
-      const token = await session.mesh.createInvite(session.locked, session.salt, access);
-      const url = `${location.origin}${location.pathname}#invite=${encodeURIComponent(token)}`;
-      setInviteLink(url);
+      setInviteLink(roomUrl(session.roomId, access));
     } catch (error) {
       setShareError(error instanceof Error ? error.message : "Could not create an invite.");
     } finally {
@@ -726,21 +774,6 @@ export function App() {
     }
   };
 
-  const acceptAnswer = async (answer: string) => {
-    if (!session) return;
-    setShareBusy(true);
-    setShareError("");
-    try {
-      await session.mesh.acceptAnswer(answer);
-      setInviteLink("");
-      showToast("Peer connected");
-    } catch (error) {
-      setShareError(error instanceof Error ? error.message : "Could not accept this answer.");
-    } finally {
-      setShareBusy(false);
-    }
-  };
-
   const applyPassword = async () => {
     if (!session) return;
     setSecurityError("");
@@ -754,6 +787,13 @@ export function App() {
     }
     const salt = createSalt();
     const key = await deriveRoomKey(password, salt);
+    const verification = await encryptBytes(new TextEncoder().encode(ROOM_PASSWORD_MARKER), key);
+    try {
+      await session.signaling.setRoomSecurity(true, salt, verification);
+    } catch (error) {
+      setSecurityError(error instanceof Error ? error.message : "Only the room creator can protect this room.");
+      return;
+    }
     session.mesh.disconnect();
     session.mesh.setKey(key);
     const next = { ...session, key, locked: true, salt };
@@ -767,6 +807,12 @@ export function App() {
 
   const removePassword = async () => {
     if (!session) return;
+    try {
+      await session.signaling.setRoomSecurity(false);
+    } catch (error) {
+      setSecurityError(error instanceof Error ? error.message : "Only the room creator can remove room protection.");
+      return;
+    }
     session.mesh.disconnect();
     session.mesh.setKey(undefined);
     const next = { ...session, key: undefined, locked: false, salt: undefined };
@@ -1288,17 +1334,10 @@ export function App() {
     const running = emptyRunResult(session.mesh.peerId, localName, language);
     session.runner.set("result", running);
     try {
-      let output: { stdout: string; stderr: string; durationMs: number };
-      if (canRunLocally(language)) {
-        output = await runLocalCode(activeText?.toString() || "", language);
-      } else {
-        if (!judgeEndpoint) throw new Error("Configure a trusted Judge0 CE endpoint first.");
-        if (!window.confirm(`Send the current ${language} code to ${judgeEndpoint} for execution?`)) {
-          session.runner.delete("result");
-          return;
-        }
-        output = await runWithJudge0(judgeEndpoint, language, activeText?.toString() || "", stdin);
-      }
+      const projectFiles = materializeProject(session.codeFiles, session.codeFileMeta);
+      const activeFile = projectFiles.find((file) => file.id === activeFileId);
+      if (!activeFile) throw new Error("Select a file to run.");
+      const output = await runBrowserCode(activeFile, projectFiles, stdin);
       session.runner.set("result", {
         ...running,
         ...output,
@@ -1833,11 +1872,6 @@ export function App() {
             open={runnerOpen}
             language={language}
             result={session.runner.get("result") as RunResult | undefined}
-            endpoint={judgeEndpoint}
-            onEndpointChange={(value) => {
-              setJudgeEndpoint(value);
-              localStorage.setItem("sharecode:judge0-endpoint", value);
-            }}
             onRun={(stdin) => void runCode(stdin)}
             onClose={() => setRunnerOpen(false)}
           />
@@ -2013,7 +2047,6 @@ export function App() {
         error={shareError}
         peerCount={peerCount}
         onCreateInvite={(access) => void createInvite(access)}
-        onAcceptAnswer={(answer) => void acceptAnswer(answer)}
         onJoin={() => void joinInvite()}
       />
 

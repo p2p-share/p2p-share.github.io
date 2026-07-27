@@ -1,35 +1,25 @@
-import { canRunLocally, emptyRunResult, runWithJudge0 } from "../src/lib/runner";
+import { emptyRunResult, getBrowserRunnerEngine, runnerEngineLabel } from "../src/lib/runner";
 
 describe("code runner", () => {
-  it("keeps JavaScript and TypeScript execution local", () => {
-    expect(canRunLocally("javascript")).toBe(true);
-    expect(canRunLocally("typescript")).toBe(true);
-    expect(canRunLocally("python")).toBe(false);
+  it("routes languages to browser-side engines", () => {
+    expect(getBrowserRunnerEngine("javascript")).toBe("native-js");
+    expect(getBrowserRunnerEngine("typescript", [{ name: "package.json", content: "{}" }])).toBe("webcontainer");
+    expect(getBrowserRunnerEngine("python")).toBe("pyodide");
+    expect(getBrowserRunnerEngine("ruby")).toBe("ruby-wasm");
+    expect(getBrowserRunnerEngine("php")).toBe("php-wasm");
+    expect(getBrowserRunnerEngine("lua")).toBe("fengari");
+    expect(getBrowserRunnerEngine("r")).toBe("webr");
+    expect(getBrowserRunnerEngine("sql")).toBe("sqlite-wasm");
+    expect(getBrowserRunnerEngine("c")).toBe("wasmer-clang");
+    expect(getBrowserRunnerEngine("cpp")).toBe("wasmer-clang");
+    expect(getBrowserRunnerEngine("java")).toBe("cheerpj");
+    expect(getBrowserRunnerEngine("go")).toBe("unsupported");
+    expect(runnerEngineLabel("pyodide")).toContain("Pyodide");
     expect(emptyRunResult("peer-1", "Alex", "go")).toMatchObject({
       peerId: "peer-1",
       author: "Alex",
       language: "go",
       status: "running",
     });
-  });
-
-  it("discovers the language and submits to a configured Judge0 endpoint", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 71, name: "Python (3.8.1)" }]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        stdout: "42\n",
-        stderr: null,
-        time: "0.012",
-        status: { description: "Accepted" },
-      }), { status: 200 }));
-
-    await expect(runWithJudge0("https://runner.example/", "python", "print(42)", "")).resolves.toEqual({
-      stdout: "42\n",
-      stderr: "",
-      durationMs: 12,
-      description: "Accepted",
-    });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://runner.example/submissions?base64_encoded=false&wait=true");
-    fetchMock.mockRestore();
   });
 });

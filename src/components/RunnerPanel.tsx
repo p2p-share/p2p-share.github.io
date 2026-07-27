@@ -1,44 +1,36 @@
 import { useState } from "react";
 import type { RunResult } from "../types";
-import { canRunLocally } from "../lib/runner";
+import { getBrowserRunnerEngine, runnerEngineLabel } from "../lib/runner";
 import { Icon } from "./Icons";
 
 export function RunnerPanel({
   open,
   language,
   result,
-  endpoint,
-  onEndpointChange,
   onRun,
   onClose,
 }: {
   open: boolean;
   language: string;
   result?: RunResult;
-  endpoint: string;
-  onEndpointChange: (value: string) => void;
   onRun: (stdin: string) => void;
   onClose: () => void;
 }) {
   const [stdin, setStdin] = useState("");
-  const local = canRunLocally(language);
+  const engine = getBrowserRunnerEngine(language);
+  const available = engine !== "unsupported";
   return (
     <section className={`runner-panel ${open ? "open" : ""}`} aria-label="Code runner">
       <header className="runner-head">
         <div><span className="eyebrow">Collaborative output</span><h2>Code runner</h2></div>
-        <span className={`runner-mode ${local ? "local" : ""}`}>{local ? "Local sandbox" : "Judge0 endpoint"}</span>
+        <span className={`runner-mode ${available ? "local" : ""}`}>{runnerEngineLabel(engine)}</span>
         <button className="icon-button" onClick={onClose} aria-label="Close code runner"><Icon name="x" /></button>
       </header>
       <div className="runner-controls">
-        {!local && (
-          <label>Judge0 CE endpoint
-            <input value={endpoint} onChange={(event) => onEndpointChange(event.target.value)} placeholder="https://your-runner.example.com" />
-          </label>
-        )}
-        <label>Standard input
+        {!["sandpack", "cheerpj", "sqlite-wasm"].includes(engine) && <label>Standard input
           <textarea rows={2} value={stdin} onChange={(event) => setStdin(event.target.value)} placeholder="Optional stdin" />
-        </label>
-        <button className="primary-button run-button" disabled={result?.status === "running" || (!local && !endpoint)} onClick={() => onRun(stdin)}>
+        </label>}
+        <button className="primary-button run-button" disabled={result?.status === "running" || !available} onClick={() => onRun(stdin)}>
           <Icon name="play" /> {result?.status === "running" ? "Running…" : `Run ${language}`}
         </button>
       </div>
@@ -52,7 +44,14 @@ export function RunnerPanel({
           </>
         )}
       </div>
-      {!local && <p className="runner-privacy"><Icon name="shield" /> Code is sent to the endpoint you configure. Use a trusted or self-hosted Judge0 CE instance.</p>}
+      <p className="runner-privacy"><Icon name="shield" />{
+        engine === "wasmer-clang" ? "Wasm Clang runs locally; its first compiler download is large."
+          : engine === "cheerpj" ? "CheerpJ runs compiled .class/.jar artifacts; Java source still needs compilation."
+            : engine === "webcontainer" ? "Node projects run in a browser WebContainer when browser isolation permits."
+              : engine === "sandpack" ? "Frontend projects compile with Sandpack; use Preview for interaction."
+                : engine === "unsupported" ? "No browser runtime is configured for this format."
+                  : "Execution stays in browser memory and its result is synchronized to peers."
+      }</p>
     </section>
   );
 }

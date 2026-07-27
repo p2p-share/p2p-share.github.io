@@ -13,8 +13,9 @@ async function exercise(viewport, label) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  await page.goto("http://127.0.0.1:5173", { waitUntil: "networkidle" });
+  await page.goto("http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
   const onboarding = page.getByLabel("Your display name");
+  await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
   if (await onboarding.isVisible()) {
     await onboarding.fill(`Smoke ${label}`);
     await page.getByRole("button", { name: "Enter workspace" }).click();
@@ -28,12 +29,12 @@ async function exercise(viewport, label) {
     throw new Error("Invite dialog exposes raw connection payloads before they are requested.");
   }
   await inviteDialog.getByRole("button", { name: "Create editable invite" }).click();
-  await inviteDialog.getByLabel("One-time invite").waitFor({ timeout: 20_000 });
+  await inviteDialog.getByLabel("Room invite").waitFor({ timeout: 20_000 });
   if (await inviteDialog.locator(".signal-details textarea").count()) {
     throw new Error("Invite dialog exposes the full invite URL by default.");
   }
   await inviteDialog.getByRole("button", { name: "Show QR" }).click();
-  await inviteDialog.getByRole("img", { name: "QR code for One-time invite" }).waitFor();
+  await inviteDialog.getByRole("img", { name: "QR code for Room invite" }).waitFor();
   await page.screenshot({ path: `dist/invite-flow-${label}.png`, fullPage: true });
   await inviteDialog.getByRole("button", { name: "Close" }).click();
   if (label === "desktop") {
@@ -108,15 +109,102 @@ async function exercise(viewport, label) {
   return { label, errors, dimensions };
 }
 
+async function verifyAutomaticSignaling() {
+  const room = `smoke-${Date.now()}`;
+  const contexts = await Promise.all([
+    browser.newContext({ viewport: { width: 900, height: 700 } }),
+    browser.newContext({ viewport: { width: 900, height: 700 } }),
+    browser.newContext({ viewport: { width: 900, height: 700 } }),
+  ]);
+  const pages = await Promise.all(contexts.map((context) => context.newPage()));
+  const errors = [];
+  for (const page of pages) {
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+  }
+  await Promise.all(pages.map(async (page, index) => {
+    await page.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+    const onboarding = page.getByLabel("Your display name");
+    await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
+    if (await onboarding.isVisible()) {
+      await onboarding.fill(`Firebase peer ${index + 1}`);
+      await page.getByRole("button", { name: "Enter workspace" }).click();
+    }
+    await page.getByLabel("Collaborative code editor").waitFor();
+  }));
+  try {
+    await Promise.all(pages.map((page) => page.getByText("3 here", { exact: true }).waitFor({ timeout: 60_000 })));
+  } catch {
+    const statuses = await Promise.all(pages.map((page) => page.locator(".connection-status").allTextContents()));
+    throw new Error(`Automatic signaling did not connect. Statuses: ${JSON.stringify(statuses)}. Errors: ${errors.join(" | ")}`);
+  }
+  await Promise.all(contexts.map((context) => context.close()));
+  if (errors.length) throw new Error(`automatic signaling browser errors:\n${errors.join("\n")}`);
+  return { label: "firebase-signaling", peers: 3, errors: [] };
+}
+
+async function verifyPasswordRoom() {
+  const room = `locked-${Date.now()}`;
+  const errors = [];
+  const hostContext = await browser.newContext({ viewport: { width: 1100, height: 760 } });
+  const host = await hostContext.newPage();
+  host.on("console", (message) => { if (message.type() === "error") errors.push(`host: ${message.text()}`); });
+  await host.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+  const hostName = host.getByLabel("Your display name");
+  await hostName.or(host.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
+  if (await hostName.isVisible()) {
+    await hostName.fill("Room owner");
+    await host.getByRole("button", { name: "Enter workspace" }).click();
+  }
+  await host.getByLabel("Collaborative code editor").waitFor();
+  await host.waitForTimeout(1500);
+  await host.getByLabel("Privacy settings").click();
+  const settings = host.getByRole("dialog", { name: "Settings & privacy" });
+  await settings.getByLabel("New room password").fill("correct-horse");
+  await settings.getByLabel("Confirm password").fill("correct-horse");
+  await settings.getByRole("button", { name: "Protect room" }).click();
+  await settings.waitFor({ state: "hidden" });
+
+  const guestContext = await browser.newContext({ viewport: { width: 900, height: 700 } });
+  const guest = await guestContext.newPage();
+  guest.on("console", (message) => { if (message.type() === "error") errors.push(`guest: ${message.text()}`); });
+  await guest.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+  const unlock = guest.getByRole("dialog", { name: "Unlock private room" });
+  await unlock.waitFor({ timeout: 30_000 });
+  await unlock.getByLabel("Room password").fill("wrong-password");
+  await unlock.getByRole("button", { name: "Unlock room" }).click();
+  await unlock.getByText("Incorrect room password.", { exact: true }).waitFor();
+  await unlock.getByLabel("Room password").fill("correct-horse");
+  await unlock.getByRole("button", { name: "Unlock room" }).click();
+  const guestName = guest.getByLabel("Your display name");
+  await guestName.waitFor();
+  await guestName.fill("Protected guest");
+  await guest.getByRole("button", { name: "Enter workspace" }).click();
+  try {
+    await Promise.all([
+      host.getByText("2 here", { exact: true }).waitFor({ timeout: 45_000 }),
+      guest.getByText("2 here", { exact: true }).waitFor({ timeout: 45_000 }),
+    ]);
+  } catch {
+    throw new Error(`Password peers did not connect: ${errors.join(" | ")}`);
+  }
+  await Promise.all([guestContext.close(), hostContext.close()]);
+  return { label: "password-room", wrongPasswordRejected: true, peers: 2, errors };
+}
+
 const results = [
   await exercise({ width: 1440, height: 900 }, "desktop"),
   await exercise({ width: 390, height: 844 }, "mobile"),
+  await verifyAutomaticSignaling(),
+  await verifyPasswordRoom(),
 ];
 await browser.close();
 
 for (const result of results) {
   if (result.errors.length) throw new Error(`${result.label} browser errors:\n${result.errors.join("\n")}`);
-  if (result.dimensions.scrollWidth > result.dimensions.width) {
+  if (result.dimensions && result.dimensions.scrollWidth > result.dimensions.width) {
     throw new Error(`${result.label} has horizontal overflow: ${JSON.stringify(result.dimensions)}`);
   }
 }

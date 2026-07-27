@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsParticipant(roomId, peerId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(peerId))
+        && get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(peerId)).data.uid == request.auth.uid;
+    }
+
+    match /rooms/{roomId} {
+      allow create: if signedIn()
+        && request.resource.data.hostUid == request.auth.uid;
+      allow get: if signedIn();
+      allow list: if false;
+      allow update, delete: if signedIn()
+        && resource.data.hostUid == request.auth.uid;
+
+      match /participants/{peerId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.uid == request.auth.uid;
+        allow update: if signedIn()
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.uid == resource.data.uid;
+        allow delete: if signedIn()
+          && resource.data.uid == request.auth.uid;
+      }
+
+      match /signals/{signalId} {
+        allow read: if ownsParticipant(roomId, resource.data.targetPeerId);
+        allow create: if signedIn()
+          && ownsParticipant(roomId, request.resource.data.senderPeerId)
+          && request.resource.data.type in ["offer", "answer"]
+          && request.resource.data.keys().hasOnly([
+            "senderPeerId",
+            "targetPeerId",
+            "type",
+            "payload",
+            "createdAt",
+            "expiresAt"
+          ])
+          && request.resource.data.payload.description.sdp is string
+          && request.resource.data.payload.description.sdp.size() <= 100000;
+        allow delete: if ownsParticipant(roomId, resource.data.targetPeerId)
+          || ownsParticipant(roomId, resource.data.senderPeerId);
+        allow update: if false;
+      }
+    }
+  }
+}
