@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import * as Y from "yjs";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { CallPanel } from "./components/CallPanel";
@@ -22,13 +22,14 @@ import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
 import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
 import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
+import { streamUtf8Blob, type StreamImportProgress } from "./lib/largeImport";
 import {
   downloadProjectZip,
   importProjectZip,
+  isProbablyBinary,
   materializeProject,
   MAX_PROJECT_FILES,
   MAX_PROJECT_SIZE,
-  projectSize,
   readTextProjectFile,
   sanitizeProjectPath,
   type ImportCandidate,
@@ -78,8 +79,10 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
+type WorkspacePanel = "project" | "files" | "workbench" | "runner" | "activity" | "review" | "chat" | "publish";
+
 const MAX_FILE_SIZE = 1024 ** 3;
-const MAX_EDITOR_FILE_SIZE = 256 * 1024 ** 2;
+const MAX_EDITOR_FILE_SIZE = 512 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
 const FILE_CHUNK_SIZE = 48 * 1024;
 const STREAM_IMPORT_ORIGIN = "stream-import";
@@ -155,16 +158,35 @@ export function App() {
   const [answerToken, setAnswerToken] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState("");
-  const [filesOpen, setFilesOpen] = useState(false);
-  const [projectOpen, setProjectOpen] = useState(() => window.innerWidth > 1100);
+  const [activeWorkspacePanel, setActiveWorkspacePanel] = useState<WorkspacePanel | undefined>(
+    () => window.innerWidth > 1100 ? "project" : undefined,
+  );
+  const setPanelOpen = useCallback((panel: WorkspacePanel, action: SetStateAction<boolean>) => {
+    setActiveWorkspacePanel((current) => {
+      const isOpen = current === panel;
+      const shouldOpen = typeof action === "function" ? action(isOpen) : action;
+      if (shouldOpen) return panel;
+      return isOpen ? undefined : current;
+    });
+  }, []);
+  const projectOpen = activeWorkspacePanel === "project";
+  const filesOpen = activeWorkspacePanel === "files";
+  const workbenchOpen = activeWorkspacePanel === "workbench";
+  const runnerOpen = activeWorkspacePanel === "runner";
+  const activityOpen = activeWorkspacePanel === "activity";
+  const reviewOpen = activeWorkspacePanel === "review";
+  const chatOpen = activeWorkspacePanel === "chat";
+  const publishOpen = activeWorkspacePanel === "publish";
+  const setProjectOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("project", action), [setPanelOpen]);
+  const setFilesOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("files", action), [setPanelOpen]);
+  const setWorkbenchOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("workbench", action), [setPanelOpen]);
+  const setRunnerOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("runner", action), [setPanelOpen]);
+  const setActivityOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("activity", action), [setPanelOpen]);
+  const setReviewOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("review", action), [setPanelOpen]);
+  const setChatOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("chat", action), [setPanelOpen]);
+  const setPublishOpen = useCallback((action: SetStateAction<boolean>) => setPanelOpen("publish", action), [setPanelOpen]);
   const [activeFileId, setActiveFileId] = useState("main");
-  const [chatOpen, setChatOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [runnerOpen, setRunnerOpen] = useState(false);
   const [callOpen, setCallOpen] = useState(false);
   const [securityOpen, setSecurityOpen] = useState(false);
   const [password, setPassword] = useState("");
@@ -190,7 +212,14 @@ export function App() {
   const [projectWarnings, setProjectWarnings] = useState<string[]>([]);
   const [otherTabs, setOtherTabs] = useState(0);
   const [saveLeader, setSaveLeader] = useState(true);
-  const [importProgress, setImportProgress] = useState<{ name: string; percent: number; bytes: number }>();
+  const [importProgress, setImportProgress] = useState<{
+    name: string;
+    percent: number;
+    bytes: number;
+    characters: number;
+    lines: number;
+    phase: "reading" | "syncing" | "verifying" | "saving";
+  }>();
   const needsOnboarding = useRef(!sessionStorage.getItem("sharecode:guest-name"));
   const [onboardingOpen, setOnboardingOpen] = useState(needsOnboarding.current);
   const [onboardingError, setOnboardingError] = useState("");
@@ -214,11 +243,16 @@ export function App() {
   const [callMode, setCallMode] = useState<"audio" | "video">();
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const openCall = useCallback(() => {
+    setActiveWorkspacePanel(undefined);
+    setCallOpen(true);
+  }, []);
   const bootStarted = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const sinks = useRef(new Map<string, IncomingSink>());
   const importInput = useRef<HTMLInputElement>(null);
   const importCancelled = useRef(false);
+  const importInProgress = useRef(false);
   const localNameRef = useRef(localName);
   const localColor = useMemo(() => palette[Math.floor(Math.random() * palette.length)], []);
   const activeText = session?.codeFiles.get(activeFileId) || session?.text;
@@ -394,8 +428,10 @@ export function App() {
       };
       mergeRecentProject(recent);
       session.tabs.announceRecent(recent);
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(() => void persist(session), 350);
+      if (!importInProgress.current) {
+        if (saveTimer.current) window.clearTimeout(saveTimer.current);
+        saveTimer.current = window.setTimeout(() => void persist(session), 350);
+      }
     };
     session.doc.on("update", scheduleSave);
     session.files.observe(redraw);
@@ -448,7 +484,7 @@ export function App() {
   }, [session, showToast]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || importInProgress.current) return;
     const timer = window.setTimeout(
       () => setStats(documentStats(activeText?.toString() || "")),
       (activeText?.length || 0) > LARGE_DOCUMENT_THRESHOLD ? 900 : 250,
@@ -546,7 +582,7 @@ export function App() {
         if (body.type === "call-state") {
           const peerId = String(body.peerId);
           if (body.active) {
-            setCallOpen(true);
+            openCall();
             showToast(`${String(body.name)} started a ${String(body.mode)} call`);
           } else {
             setRemoteStreams((current) => {
@@ -641,7 +677,7 @@ export function App() {
       window.clearInterval(heartbeat);
       session.mesh.disconnect();
     };
-  }, [localColor, session, showToast]);
+  }, [localColor, openCall, session, showToast]);
 
   const unlock = async () => {
     if (!boot) return;
@@ -816,10 +852,26 @@ export function App() {
   const importDocument = async (file?: File) => {
     if (!session || !file || isReadOnly) return;
     if (file.size > MAX_EDITOR_FILE_SIZE) {
-      showToast("The collaborative editor accepts text files up to 256 MB. Share larger files as attachments.");
+      showToast("The collaborative editor accepts text files up to 512 MB. Share larger files as attachments.");
       return;
     }
     if (!activeText) return;
+    const estimatedCurrentSize = [...session.codeFiles.entries()].reduce((total, [id, text]) => {
+      const recordedSize = session.codeFileMeta.get(id)?.size || 0;
+      return total + Math.max(recordedSize, text.length);
+    }, 0);
+    const replacedSize = activeText.length
+      ? 0
+      : Math.max(activeMeta?.size || 0, activeText.length);
+    if (estimatedCurrentSize - replacedSize + file.size > MAX_PROJECT_SIZE) {
+      showToast("This file would exceed the 512 MB collaborative project limit.");
+      return;
+    }
+    const sample = new Uint8Array(await file.slice(0, 8_192).arrayBuffer());
+    if (isProbablyBinary(sample)) {
+      showToast("This file appears to be binary. Share it as an attachment instead of opening it in the editor.");
+      return;
+    }
     let targetText = activeText;
     let targetId = activeFileId;
     if (activeText.length) {
@@ -831,11 +883,35 @@ export function App() {
         language: languageFromFilename(file.name),
         createdBy: localName,
         createdAt: Date.now(),
+        size: file.size,
       });
       setActiveFileId(targetId);
     }
     importCancelled.current = false;
-    setImportProgress({ name: file.name, percent: 0, bytes: 0 });
+    importInProgress.current = true;
+    (document.activeElement as HTMLElement | null)?.blur();
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = undefined;
+    }
+    setImportProgress({
+      name: file.name,
+      percent: 0,
+      bytes: 0,
+      characters: 0,
+      lines: 1,
+      phase: "reading",
+    });
+    if (!activeText.length) {
+      const previous = session.codeFileMeta.get(targetId);
+      session.codeFileMeta.set(targetId, {
+        name: file.name,
+        language: languageFromFilename(file.name),
+        createdBy: previous?.createdBy || localName,
+        createdAt: previous?.createdAt || Date.now(),
+        size: file.size,
+      });
+    }
     try {
       if (targetText.length) {
         session.logs.push([{
@@ -851,85 +927,107 @@ export function App() {
         }]);
         targetText.delete(0, targetText.length);
       }
-      const reader = file.stream().getReader();
-      const decoder = new TextDecoder("utf-8", { fatal: false });
-      const targetChunkSize = 1024 * 1024;
-      let buffer = "";
-      let processed = 0;
-      let line = 1;
-      const append = async (value: string) => {
-        if (!value) return;
-        let newLines = 0;
-        for (let index = 0; index < value.length; index += 1) {
-          if (value.charCodeAt(index) === 10) newLines += 1;
-        }
-        let importUpdate: Uint8Array | undefined;
-        const captureUpdate = (update: Uint8Array, origin: unknown) => {
-          if (origin === STREAM_IMPORT_ORIGIN) importUpdate = update;
-        };
-        session.doc.on("update", captureUpdate);
-        session.doc.transact(() => {
-          targetText.insert(targetText.length, value);
-          session.logs.push([{
-            id: crypto.randomUUID(),
-            peerId: session.mesh.peerId,
-            author: localName,
-            color: localColor,
-            action: "insert",
-            fromLine: line,
-            toLine: line + newLines,
-            text: value.length > 8_000
-              ? `${value.slice(0, 8_000)}\n[… ${value.length - 8_000} more imported characters …]`
-              : value,
-            timestamp: Date.now(),
-          }]);
-        }, STREAM_IMPORT_ORIGIN);
-        session.doc.off("update", captureUpdate);
-        if (importUpdate) {
-          await session.mesh.send({
-            type: "y-update",
-            update: bytesToBase64(importUpdate),
-          });
-        }
-        line += newLines;
+      let peerSync = Promise.resolve();
+      let peerSyncFailed = false;
+      const enqueuePeerUpdate = (update: Uint8Array) => {
+        peerSync = peerSync
+          .then(() => session.mesh.send({ type: "y-update", update: bytesToBase64(update) }))
+          .catch(() => { peerSyncFailed = true; });
+        return peerSync;
+      };
+      const reportProgress = (progress: StreamImportProgress) => {
         setImportProgress({
           name: file.name,
-          percent: file.size ? Math.min(100, Math.round((processed / file.size) * 100)) : 100,
-          bytes: processed,
+          percent: file.size ? Math.min(99, Math.floor((progress.bytesRead / file.size) * 100)) : 99,
+          bytes: progress.bytesRead,
+          characters: progress.characters,
+          lines: progress.lines,
+          phase: "reading",
         });
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
       };
-      while (true) {
-        if (importCancelled.current) {
-          await reader.cancel();
-          throw new DOMException("Import cancelled.", "AbortError");
-        }
-        const { done, value } = await reader.read();
-        if (done) break;
-        processed += value.byteLength;
-        buffer += decoder.decode(value, { stream: true });
-        if (buffer.length >= targetChunkSize) {
-          const chunk = buffer;
-          buffer = "";
-          await append(chunk);
-        }
-      }
-      buffer += decoder.decode();
-      await append(buffer);
-      session.codeFileMeta.set(targetId, {
-        name: file.name,
-        language: languageFromFilename(file.name),
-        createdBy: localName,
-        createdAt: Date.now(),
+      const result = await streamUtf8Blob(file, {
+        chunkCharacters: 1024 * 1024,
+        isCancelled: () => importCancelled.current,
+        onProgress: reportProgress,
+        onChunk: async (value, progress) => {
+          let importUpdate: Uint8Array | undefined;
+          const captureUpdate = (update: Uint8Array, origin: unknown) => {
+            if (origin === STREAM_IMPORT_ORIGIN) importUpdate = update;
+          };
+          session.doc.on("update", captureUpdate);
+          session.doc.transact(() => {
+            targetText.insert(targetText.length, value);
+          }, STREAM_IMPORT_ORIGIN);
+          session.doc.off("update", captureUpdate);
+          if (importUpdate) void enqueuePeerUpdate(importUpdate);
+          reportProgress(progress);
+          // Bound queued peer data without making local disk reads wait for every
+          // individual WebRTC frame.
+          if (progress.chunks % 4 === 0) await peerSync;
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        },
       });
-      showToast(`${file.name} opened`);
+      setImportProgress((current) => current && { ...current, percent: 99, phase: "syncing" });
+      await peerSync;
+      setImportProgress((current) => current && { ...current, phase: "verifying" });
+      if (result.bytesRead !== file.size || targetText.length < result.characters) {
+        throw new Error("The imported content failed its completeness check.");
+      }
+      let finalUpdate: Uint8Array | undefined;
+      const captureFinalUpdate = (update: Uint8Array, origin: unknown) => {
+        if (origin === STREAM_IMPORT_ORIGIN) finalUpdate = update;
+      };
+      session.doc.on("update", captureFinalUpdate);
+      session.doc.transact(() => {
+        const previous = session.codeFileMeta.get(targetId);
+        session.codeFileMeta.set(targetId, {
+          name: file.name,
+          language: languageFromFilename(file.name),
+          createdBy: previous?.createdBy || localName,
+          createdAt: previous?.createdAt || Date.now(),
+          size: file.size,
+        });
+        session.logs.push([{
+          id: crypto.randomUUID(),
+          peerId: session.mesh.peerId,
+          author: localName,
+          color: localColor,
+          action: "insert",
+          fromLine: 1,
+          toLine: result.lines,
+          text: `[Imported ${result.lines.toLocaleString()} lines, ${result.characters.toLocaleString()} characters, and ${result.bytesRead.toLocaleString()} bytes from ${file.name}]`,
+          timestamp: Date.now(),
+        }]);
+      }, STREAM_IMPORT_ORIGIN);
+      session.doc.off("update", captureFinalUpdate);
+      if (finalUpdate) await enqueuePeerUpdate(finalUpdate);
+      setImportProgress((current) => current && { ...current, percent: 100, phase: "saving" });
+      importInProgress.current = false;
+      try {
+        await persist(session);
+      } catch {
+        showToast(`${file.name} imported completely, but browser storage could not cache it.`);
+        return;
+      }
+      showToast(peerSyncFailed
+        ? `${file.name} imported completely. A peer may need to reconnect to finish syncing.`
+        : `${file.name} imported completely`);
     } catch (error) {
+      importInProgress.current = false;
+      try {
+        await persist(session);
+      } catch {
+        // The partial document remains usable in memory even when local
+        // recovery storage is unavailable.
+      }
       showToast(error instanceof DOMException && error.name === "AbortError"
         ? "Import cancelled. The content imported so far remains in the editor."
-        : "This file could not be imported as text.");
+        : error instanceof Error ? error.message : "This file could not be imported as text.");
     } finally {
+      importInProgress.current = false;
       setImportProgress(undefined);
       importCancelled.current = false;
+      setRevision((value) => value + 1);
     }
   };
 
@@ -1411,9 +1509,16 @@ export function App() {
 
   const name = activeMeta?.name || "untitled";
   const language = activeMeta?.language || "text";
-  const projectFiles = materializeProject(session.codeFiles, session.codeFileMeta);
-  const totalProjectSize = projectSize(projectFiles);
+  const totalProjectSize = [...session.codeFiles.entries()].reduce((total, [id, text]) => {
+    const recordedSize = session.codeFileMeta.get(id)?.size || 0;
+    return total + Math.max(recordedSize, text.length);
+  }, 0);
   const manifest = session.meta.get("projectManifest") as ProjectManifest;
+  // Workbench tools require complete strings. Keep those copies out of the
+  // normal editor render path, especially while a large import is streaming.
+  const projectFiles = workbenchOpen
+    ? materializeProject(session.codeFiles, session.codeFileMeta)
+    : [];
   const activeProjectFile = projectFiles.find((file) => file.id === activeFileId) || projectFiles[0];
   const sharedFiles = [...session.files.values()].sort((a, b) => b.addedAt - a.addedAt);
   const allPresence: Presence[] = [
@@ -1422,9 +1527,13 @@ export function App() {
   ];
 
   return (
-    <div className={`app ${dark ? "dark" : "light"}`} data-revision={revision}>
+    <div
+      className={`app ${dark ? "dark" : "light"} ${importProgress ? "importing" : ""}`}
+      data-active-panel={activeWorkspacePanel || "none"}
+      data-revision={revision}
+    >
       <header className="topbar">
-        <button className="brand" onClick={() => setFilesOpen((value) => !value)} aria-label="Toggle shared files">
+        <button className="brand" onClick={() => setFilesOpen((value) => !value)} aria-label="Toggle shared files" aria-pressed={filesOpen}>
           <span className="brand-mark"><img src="./logo.png" alt="" /></span>
           <span>p2p-share</span>
         </button>
@@ -1433,7 +1542,7 @@ export function App() {
           <input
             aria-label="Document name"
             value={name}
-            readOnly={isReadOnly}
+            readOnly={isReadOnly || Boolean(importProgress)}
             onChange={(event) => session.codeFileMeta.set(activeFileId, {
               ...(activeMeta || { language: "text", createdBy: localName, createdAt: Date.now() }),
               name: event.target.value,
@@ -1458,31 +1567,31 @@ export function App() {
             {peerCount ? `${peerCount + 1} here` : "Only you"}
           </button>
           <div className="desktop-tools">
-            <button className="icon-button top-icon" onClick={() => setFilesOpen((value) => !value)} aria-label="Open direct file sharing" title="Share files">
+            <button className="icon-button top-icon" onClick={() => setFilesOpen((value) => !value)} aria-label="Open direct file sharing" aria-pressed={filesOpen} title="Share files">
               <Icon name="attachment" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setProjectOpen((value) => !value)} aria-label="Toggle project explorer" title="Project explorer">
+            <button className="icon-button top-icon" onClick={() => setProjectOpen((value) => !value)} aria-label="Toggle project explorer" aria-pressed={projectOpen} title="Project explorer">
               <Icon name="folder" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setWorkbenchOpen((value) => !value)} aria-label="Open local developer workbench" title="Analyze & preview">
+            <button className="icon-button top-icon" onClick={() => setWorkbenchOpen((value) => !value)} aria-label="Open local developer workbench" aria-pressed={workbenchOpen} title="Analyze & preview">
               <Icon name="braces" />
             </button>
             <button className="icon-button top-icon" onClick={() => setCommandOpen(true)} aria-label="Open command palette" title="Command palette (Ctrl+Shift+P)">
               <Icon name="search" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setCallOpen(true)} aria-label="Open audio or video call" title="Room call">
+            <button className="icon-button top-icon" onClick={openCall} aria-label="Open audio or video call" title="Room call">
               <Icon name="video" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setRunnerOpen((value) => !value)} aria-label="Open code runner" title="Run code">
+            <button className="icon-button top-icon" onClick={() => setRunnerOpen((value) => !value)} aria-label="Open code runner" aria-pressed={runnerOpen} title="Run code">
               <Icon name="play" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setActivityOpen((value) => !value)} aria-label="Open version logs" title="Version logs">
+            <button className="icon-button top-icon" onClick={() => setActivityOpen((value) => !value)} aria-label="Open version logs" aria-pressed={activityOpen} title="Version logs">
               <Icon name="history" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setReviewOpen((value) => !value)} aria-label="Open code review discussions" title="Code review">
+            <button className="icon-button top-icon" onClick={() => setReviewOpen((value) => !value)} aria-label="Open code review discussions" aria-pressed={reviewOpen} title="Code review">
               <Icon name="review" />
             </button>
-            <button className="icon-button top-icon" onClick={() => setChatOpen((value) => !value)} aria-label="Open group chat" title="Group chat">
+            <button className="icon-button top-icon" onClick={() => setChatOpen((value) => !value)} aria-label="Open group chat" aria-pressed={chatOpen} title="Group chat">
               <Icon name="chat" />
             </button>
             <button className="icon-button top-icon" disabled={isReadOnly} onClick={() => importInput.current?.click()} aria-label="Open text file" title="Open text file">
@@ -1499,7 +1608,7 @@ export function App() {
             <Icon name="share" />
             <span>Share</span>
           </button>
-          <button className="icon-button top-icon" onClick={() => setPublishOpen(true)} aria-label="Publish code and Git integration" title="Publish code">
+          <button className="icon-button top-icon" onClick={() => setPublishOpen((value) => !value)} aria-label="Publish code and Git integration" aria-pressed={publishOpen} title="Publish code">
             <Icon name="publish" />
           </button>
           <button
@@ -1553,14 +1662,20 @@ export function App() {
           }
         }}
       >
-        {(filesOpen || projectOpen || chatOpen || activityOpen || reviewOpen || publishOpen || workbenchOpen) && <button className="files-scrim" aria-label="Close side panel" onClick={() => { setFilesOpen(false); setProjectOpen(false); setChatOpen(false); setActivityOpen(false); setReviewOpen(false); setPublishOpen(false); setWorkbenchOpen(false); }} />}
+        {activeWorkspacePanel && activeWorkspacePanel !== "runner" && (
+          <button
+            className="files-scrim"
+            aria-label={`Close ${activeWorkspacePanel} panel`}
+            onClick={() => setActiveWorkspacePanel(undefined)}
+          />
+        )}
         <ProjectPanel
           open={projectOpen}
           files={[...session.codeFileMeta.entries()]}
           activeId={activeFileId}
           manifest={manifest}
           totalSize={totalProjectSize}
-          readOnly={isReadOnly}
+          readOnly={isReadOnly || Boolean(importProgress)}
           warnings={projectWarnings}
           otherTabs={otherTabs}
           onClose={() => setProjectOpen(false)}
@@ -1571,12 +1686,17 @@ export function App() {
           onDelete={deleteProjectFile}
           onImportFiles={(files) => void importProjectFiles(files)}
           onImportZip={(file) => void importZip(file)}
-          onDownloadZip={() => void downloadProjectZip(projectFiles, manifest)}
+          onDownloadZip={() => void downloadProjectZip(
+            materializeProject(session.codeFiles, session.codeFileMeta),
+            manifest,
+          )}
           onManifestChange={(value) => session.meta.set("projectManifest", value)}
           onSendToTab={() => {
-            if (!activeProjectFile) return;
-            session.tabs.sendSnippet(activeProjectFile.name, activeProjectFile.language, activeProjectFile.content);
-            showToast(`Sent ${activeProjectFile.name} to ${otherTabs} other ${otherTabs === 1 ? "tab" : "tabs"}`);
+            const content = session.codeFiles.get(activeFileId);
+            const metadata = session.codeFileMeta.get(activeFileId);
+            if (!content || !metadata) return;
+            session.tabs.sendSnippet(metadata.name, metadata.language, content.toString());
+            showToast(`Sent ${metadata.name} to ${otherTabs} other ${otherTabs === 1 ? "tab" : "tabs"}`);
           }}
         />
         <FilesPanel
@@ -1609,26 +1729,28 @@ export function App() {
           <CodeFileTabs
             files={[...session.codeFileMeta.entries()]}
             activeId={activeFileId}
-            readOnly={isReadOnly}
-            onSelect={setActiveFileId}
+            readOnly={isReadOnly || Boolean(importProgress)}
+            onSelect={(id) => {
+              if (!importProgress) setActiveFileId(id);
+            }}
             onAdd={() => {
               createProjectFile();
             }}
             onRemove={deleteProjectFile}
           />
           <div className="editor-toolbar">
-            <button className="mobile-files" onClick={() => setProjectOpen((value) => !value)}>
+            <button className={`mobile-files ${projectOpen ? "active" : ""}`} aria-pressed={projectOpen} onClick={() => setProjectOpen((value) => !value)}>
               <Icon name="menu" />
               Project
             </button>
-            <button className="mobile-import" disabled={isReadOnly} onClick={() => importInput.current?.click()}>
+            <button className="mobile-import" disabled={isReadOnly || Boolean(importProgress)} onClick={() => importInput.current?.click()}>
               <Icon name="upload" />
               Import
             </button>
             <LanguagePicker
               value={language}
               languages={languages}
-              disabled={isReadOnly}
+              disabled={isReadOnly || Boolean(importProgress)}
               onChange={(value) => session.codeFileMeta.set(activeFileId, {
                 ...(activeMeta || { name: "untitled", createdBy: localName, createdAt: Date.now() }),
                 language: value,
@@ -1640,24 +1762,24 @@ export function App() {
               {isReadOnly ? "Read-only invite" : session.locked ? "Password protected" : "WebRTC encrypted"}
             </span>
             <div className="mobile-editor-actions">
-              <button onClick={() => setFilesOpen(true)} aria-label="Share files"><Icon name="attachment" /></button>
-              <button onClick={() => setRunnerOpen((value) => !value)} aria-label="Run code"><Icon name="play" /></button>
-              <button onClick={() => setActivityOpen(true)} aria-label="Version logs"><Icon name="history" /></button>
-              <button onClick={() => setReviewOpen(true)} aria-label="Code review"><Icon name="review" /></button>
-              <button onClick={() => setCallOpen(true)} aria-label="Room call"><Icon name="video" /></button>
-              <button onClick={() => setPublishOpen(true)} aria-label="Publish code"><Icon name="publish" /></button>
+              <button className={filesOpen ? "active" : ""} onClick={() => setFilesOpen(true)} aria-label="Share files" aria-pressed={filesOpen}><Icon name="attachment" /></button>
+              <button className={runnerOpen ? "active" : ""} onClick={() => setRunnerOpen((value) => !value)} aria-label="Run code" aria-pressed={runnerOpen}><Icon name="play" /></button>
+              <button className={activityOpen ? "active" : ""} onClick={() => setActivityOpen(true)} aria-label="Version logs" aria-pressed={activityOpen}><Icon name="history" /></button>
+              <button className={reviewOpen ? "active" : ""} onClick={() => setReviewOpen(true)} aria-label="Code review" aria-pressed={reviewOpen}><Icon name="review" /></button>
+              <button onClick={openCall} aria-label="Room call"><Icon name="video" /></button>
+              <button className={publishOpen ? "active" : ""} onClick={() => setPublishOpen(true)} aria-label="Publish code" aria-pressed={publishOpen}><Icon name="publish" /></button>
             </div>
             <span className="toolbar-spacer" />
-            <button className="toolbar-action" disabled={isReadOnly} onClick={() => importInput.current?.click()} title="Import a code or text file into the collaborative editor">
+            <button className="toolbar-action" disabled={isReadOnly || Boolean(importProgress)} onClick={() => importInput.current?.click()} title="Import a code or text file into the collaborative editor">
               <Icon name="upload" /> Import code
             </button>
-            <button className="toolbar-action" onClick={() => setWorkbenchOpen((value) => !value)} title="Analyze, format and safely preview">
+            <button className={`toolbar-action ${workbenchOpen ? "active" : ""}`} aria-pressed={workbenchOpen} onClick={() => setWorkbenchOpen((value) => !value)} title="Analyze, format and safely preview">
               <Icon name="braces" /> Workbench
             </button>
             <button className="toolbar-action" onClick={createNewRoom} title="Create a new room">
               <Icon name="new" /> New
             </button>
-            <button className="toolbar-action" onClick={clearDocument} disabled={!activeText?.length} title="Clear editor">
+            <button className="toolbar-action" onClick={clearDocument} disabled={!activeText?.length || Boolean(importProgress)} title="Clear editor">
               <Icon name="trash" /> Clear
             </button>
           </div>
@@ -1681,11 +1803,22 @@ export function App() {
           {importProgress && (
             <div className="import-progress" role="status" aria-live="polite">
               <div>
-                <strong>Importing {importProgress.name}</strong>
-                <span>{importProgress.percent}% · {(importProgress.bytes / 1024 / 1024).toFixed(1)} MB streamed</span>
+                <strong>
+                  {importProgress.phase === "reading" && "Importing "}
+                  {importProgress.phase === "syncing" && "Syncing "}
+                  {importProgress.phase === "verifying" && "Verifying "}
+                  {importProgress.phase === "saving" && "Saving "}
+                  {importProgress.name}
+                </strong>
+                <span>
+                  {importProgress.percent}% · {(importProgress.bytes / 1024 / 1024).toFixed(1)} MB ·{" "}
+                  {importProgress.lines.toLocaleString()} lines
+                </span>
               </div>
               <progress max="100" value={importProgress.percent} />
-              <button className="text-button danger-text" onClick={() => { importCancelled.current = true; }}>Cancel</button>
+              {importProgress.phase === "reading" && (
+                <button className="text-button danger-text" onClick={() => { importCancelled.current = true; }}>Cancel</button>
+              )}
             </div>
           )}
           <RunnerPanel
@@ -1783,7 +1916,7 @@ export function App() {
         />
         <PublishPanel
           open={publishOpen}
-          files={[...session.codeFiles.entries()].map(([id, content]) => ({
+          files={(publishOpen ? [...session.codeFiles.entries()] : []).map(([id, content]) => ({
             name: session.codeFileMeta.get(id)?.name || `${id}.txt`,
             content: content.toString(),
           }))}
@@ -1830,12 +1963,12 @@ export function App() {
       </div>
 
       <nav className="mobile-nav" aria-label="Room actions">
-        <button onClick={() => { setChatOpen(false); setProjectOpen(true); }}><Icon name="folder" /><span>Project</span></button>
-        <button onClick={() => { setFilesOpen(false); setChatOpen(true); }}><Icon name="chat" /><span>Chat</span></button>
+        <button className={projectOpen ? "active" : ""} aria-pressed={projectOpen} onClick={() => setProjectOpen((value) => !value)}><Icon name="folder" /><span>Project</span></button>
+        <button className={chatOpen ? "active" : ""} aria-pressed={chatOpen} onClick={() => setChatOpen((value) => !value)}><Icon name="chat" /><span>Chat</span></button>
         <button className="mobile-share" onClick={() => setShareOpen(true)}><Icon name="share" /><span>Share</span></button>
         <button onClick={exportDocument}><Icon name="download" /><span>Save</span></button>
         <button onClick={() => setSecurityOpen(true)}><Icon name="settings" /><span>Settings</span></button>
-        <button onClick={() => setFilesOpen(true)}><Icon name="attachment" /><span>Files</span></button>
+        <button className={filesOpen ? "active" : ""} aria-pressed={filesOpen} onClick={() => setFilesOpen((value) => !value)}><Icon name="attachment" /><span>Files</span></button>
       </nav>
 
       <CallPanel

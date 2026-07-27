@@ -59,7 +59,7 @@ Automatic “open one URL and appear in the room” discovery cannot be implemen
 - Ephemeral mode and one-click local cache deletion
 - Open local text/code files directly in the collaborative editor
 - Copy and language-aware document downloads (`Ctrl`/`Cmd` + `S`)
-- Practical large-document mode: incremental remote edits, deferred zero-allocation statistics, parser fallback, and chunked imports up to 256 MiB
+- Practical large-document mode: incremental remote edits, deferred statistics, parser fallback, and verified streaming imports up to 512 MiB
 - Live line, word, and character statistics
 - Drag-and-drop project files/folders plus arbitrary attachment sharing
 - Adjustable editor text size, opt-in line wrapping (off by default), and peer display name
@@ -70,7 +70,7 @@ Automatic “open one URL and appear in the room” discovery cannot be implemen
 
 ## Project workspace and limits
 
-The collaborative project stores up to 2,000 UTF-8 text files, 256 MiB per editor file, and 512 MiB total uncompressed project content. These are guardrails rather than promises that every mobile device can hold the maximum: Yjs history, browser memory, ZIP decompression, and syntax parsers add overhead. Files with NUL bytes or a high control-character ratio are treated as binary, skipped from the collaborative editor, and reported as warnings. Binary assets can still use the separate direct file-transfer panel.
+The collaborative project stores up to 2,000 UTF-8 text files and 512 MiB total uncompressed project content. The primary streaming importer accepts a single text file up to 512 MiB; bulk folder and ZIP imports retain a 256 MiB per-file guard because those paths must also stage archive or folder data. These are guardrails rather than promises that every mobile device can hold the maximum: Yjs history, browser memory, ZIP decompression, and syntax parsers add overhead. Files with NUL bytes or a high control-character ratio are treated as binary, skipped from the collaborative editor, and reported as warnings. Binary assets can still use the separate direct file-transfer panel.
 
 ZIP exports contain every collaborative text file plus `p2p-share.project.json`. ZIP imports normalize paths, reject traversal components, enforce compressed and expanded limits, skip binary entries, detect languages by filename, and restore a valid project manifest when present.
 
@@ -135,7 +135,7 @@ The collaborative editor is intended for text documents. Large or binary content
 
 ### Large text documents
 
-CodeMirror renders only the visible viewport, remote Yjs edits are applied incrementally, and expensive statistics are deferred while typing. Files above 5 MiB automatically skip syntax parsing to protect responsiveness. Imports are decoded as a stream, inserted and synchronized in backpressured 1 MiB chunks, expose progress and cancellation, and are capped at 256 MiB. The browser never needs a second complete string copy of the imported file. This can accommodate millions of short lines on a sufficiently capable desktop, but the real ceiling depends on RAM, browser limits, document shape, edit history, and the number of peers.
+CodeMirror renders only the visible viewport, remote Yjs edits are applied incrementally, and expensive statistics are deferred while typing. Files above 5 MiB automatically skip syntax parsing to protect responsiveness. Imports are decoded incrementally, inserted and synchronized in bounded 1 MiB chunks, expose byte/line progress and cancellation, verify that every source byte was read, and are capped at 512 MiB. Autosave is deferred until the stream is complete, and project strings are no longer rematerialized on every import update. This can accommodate millions of short lines on a sufficiently capable desktop, but the real ceiling depends on RAM, browser storage quota, browser limits, document shape, edit history, and the number and speed of peers.
 
 The searchable language picker includes alphabetically ordered modes for APL, Brainfuck, C, C#, C++, Clojure, CMake, COBOL, CoffeeScript, CSS, D, Dart, Dockerfile, Erlang, Fortran, Go, Groovy, Haskell, HTML, Java, JavaScript, JSX, JSON, Julia, Kotlin, Lua, Markdown, Objective-C, Pascal, Perl, PHP, plain text, PowerShell, Protocol Buffers, Python, R, Ruby, Rust, Sass/SCSS, Scala, Shell, SQL, Swift, TOML, TypeScript, TSX, Visual Basic, XML/SVG, and YAML. Unknown extensions still open safely as plain text.
 
