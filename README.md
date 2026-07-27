@@ -64,9 +64,10 @@ npm run build
 
 ## GitHub Pages deployment
 
-1. Push the repository to GitHub with `main` as the deployment branch.
+1. Push the repository to GitHub using `master`, the repository's default branch.
 2. In **Settings → Pages**, choose **GitHub Actions** as the source.
-3. Push to `main` or manually run **Deploy to GitHub Pages**.
+3. Every push to `master` now runs linting, tests, the production build, and deployment.
+   You can also manually run **Build and deploy GitHub Pages** from the Actions tab.
 
 Vite uses a relative asset base, so the build works both at a user/organization domain and under a repository subpath.
 
