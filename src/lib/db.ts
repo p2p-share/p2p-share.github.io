@@ -55,6 +55,13 @@ export async function getFile(roomId: string, fileId: string): Promise<Blob | un
   return result?.blob;
 }
 
+export async function deleteFile(roomId: string, fileId: string): Promise<void> {
+  const db = await openDb();
+  await requestResult(
+    db.transaction("files", "readwrite").objectStore("files").delete(`${roomId}:${fileId}`),
+  );
+}
+
 export async function putChunk(
   roomId: string,
   transferId: string,

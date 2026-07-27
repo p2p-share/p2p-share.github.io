@@ -15,6 +15,8 @@ export type SharedFile = {
   type: string;
   size: number;
   owner: string;
+  ownerName?: string;
+  providers?: string[];
   addedAt: number;
 };
 
@@ -117,4 +119,5 @@ export type Transfer = {
   total: number;
   status: "running" | "done" | "failed";
   error?: string;
+  startedAt?: number;
 };

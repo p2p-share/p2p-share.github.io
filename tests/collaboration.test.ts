@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { ChatMessage, ReviewEntry } from "../src/types";
+import type { ChatMessage, ReviewEntry, SharedFile } from "../src/types";
 
 function synchronize(source: Y.Doc, targets: Y.Doc[]) {
   const update = Y.encodeStateAsUpdate(source);
@@ -74,5 +74,28 @@ describe("multi-peer collaboration", () => {
       kind: "feedback",
       line: 1,
     });
+  });
+
+  it("synchronizes multi-provider file availability across peers", () => {
+    const host = new Y.Doc();
+    const peer = new Y.Doc();
+    host.getMap<SharedFile>("files").set("asset", {
+      id: "asset",
+      name: "demo.zip",
+      type: "application/zip",
+      size: 1024,
+      owner: "host",
+      ownerName: "Alex",
+      providers: ["host"],
+      addedAt: 1,
+    });
+    synchronize(host, [peer]);
+    const received = peer.getMap<SharedFile>("files").get("asset")!;
+    peer.getMap<SharedFile>("files").set("asset", {
+      ...received,
+      providers: [...received.providers!, "peer-a"],
+    });
+    synchronize(peer, [host]);
+    expect(host.getMap<SharedFile>("files").get("asset")?.providers).toEqual(["host", "peer-a"]);
   });
 });

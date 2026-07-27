@@ -49,6 +49,9 @@ Automatic “open one URL and appear in the room” discovery cannot be implemen
 - Linked source repository, branch, and commit metadata
 - Syntax modes for plain text, JavaScript, JSX, TypeScript, TSX, Python, Java, C, C++, C#, Go, Rust, Kotlin, Swift, Ruby, PHP, shell, HTML, CSS, JSON, Markdown, SQL, YAML, XML, TOML, and Dockerfiles
 - Arbitrary files up to 1 GiB per file, streamed in backpressured chunks over WebRTC
+- Dedicated direct-file workspace with drag-and-drop upload, search, local/remote filters, peer availability, transfer progress/history, retry states, and native file-invite sharing
+- Multi-provider file availability: a peer that caches a received file can continue serving it after the original uploader disconnects
+- Browser-local previews for images, audio, video, PDF, and text/code files without uploading preview content
 - File System Access streaming on supporting browsers; IndexedDB fallback elsewhere
 - Optional password protection using PBKDF2-SHA-256 and AES-256-GCM
 - WebRTC DTLS encryption even when application password protection is off
@@ -125,6 +128,8 @@ On browsers that support installation, open **Settings → Install app**. On iOS
 ## File-size behavior
 
 The application accepts individual files up to exactly 1 GiB. The WebRTC sender reads one 48 KiB slice at a time and obeys data-channel backpressure. Chromium’s File System Access API can stream an incoming file directly to a user-selected destination. Other browsers use IndexedDB, where the effective maximum depends on available disk space, browser quota, private-browsing policy, and device memory.
+
+Shared-file metadata is synchronized through the room document, while file bytes move only when a peer requests them. Files cached in IndexedDB advertise the receiving peer as an additional provider, so later requests can use any online provider. A download streamed directly to a user-selected filesystem destination is not advertised because the browser no longer controls or can re-open that file. Removing a locally owned file clears its IndexedDB copy as well as the shared room listing.
 
 The collaborative editor is intended for text documents. Large or binary content should be shared through the file panel rather than inserted into the editor.
 

@@ -7,6 +7,7 @@ import { CodeEditor, languages } from "./components/CodeEditor";
 import { CodeFileTabs } from "./components/CodeFileTabs";
 import { Dialog } from "./components/Dialog";
 import { FilesPanel } from "./components/FilesPanel";
+import { FilePreviewDialog } from "./components/FilePreviewDialog";
 import { Icon } from "./components/Icons";
 import { LanguagePicker } from "./components/LanguagePicker";
 import { ShareDialog } from "./components/ShareDialog";
@@ -19,7 +20,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import { analyzeCode, formatCode } from "./lib/analysis";
 import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
-import { deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
+import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
 import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
 import {
   downloadProjectZip,
@@ -205,6 +206,7 @@ export function App() {
   const [presences, setPresences] = useState<Presence[]>([]);
   const [localFiles, setLocalFiles] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [previewFile, setPreviewFile] = useState<{ file: SharedFile; blob: Blob }>();
   const [toast, setToast] = useState("");
   const [judgeEndpoint, setJudgeEndpoint] = useState(() => localStorage.getItem("sharecode:judge0-endpoint") || "");
   const [localStream, setLocalStream] = useState<MediaStream>();
@@ -317,7 +319,7 @@ export function App() {
         if (await getFile(bootState.roomId, id)) {
           availableIds.push(id);
           // Peer IDs are intentionally ephemeral, so recovered file ownership follows this tab.
-          files.set(id, { ...file, owner: mesh.peerId });
+          files.set(id, { ...file, owner: mesh.peerId, ownerName: localNameRef.current, providers: [mesh.peerId] });
         }
       }
       setLocalFiles(new Set(availableIds));
@@ -593,6 +595,13 @@ export function App() {
                 sink.file.type,
               );
               setLocalFiles((current) => new Set(current).add(sink.file.id));
+              const currentMeta = session.files.get(sink.file.id);
+              if (currentMeta) {
+                session.files.set(sink.file.id, {
+                  ...currentMeta,
+                  providers: [...new Set([...(currentMeta.providers || [currentMeta.owner]), session.mesh.peerId])],
+                });
+              }
             }
             updateTransfer(setTransfers, transferId, {
               status: "done",
@@ -746,13 +755,24 @@ export function App() {
   };
 
   const uploadFiles = async (list: FileList) => {
-    if (!session) return;
+    if (!session || isReadOnly) return;
     for (const file of Array.from(list)) {
       if (file.size > MAX_FILE_SIZE) {
         showToast(`${file.name} is larger than the 1 GB limit.`);
         continue;
       }
       const id = crypto.randomUUID();
+      const transferId = `upload-${id}`;
+      setTransfers((current) => [...current, {
+        id: transferId,
+        fileId: id,
+        name: file.name,
+        direction: "send",
+        transferred: 0,
+        total: file.size,
+        status: "running",
+        startedAt: Date.now(),
+      }]);
       try {
         await putFile(session.roomId, id, file);
         session.files.set(id, {
@@ -761,11 +781,16 @@ export function App() {
           type: file.type || "application/octet-stream",
           size: file.size,
           owner: session.mesh.peerId,
+          ownerName: localName,
+          providers: [session.mesh.peerId],
           addedAt: Date.now(),
         });
         setLocalFiles((current) => new Set(current).add(id));
+        updateTransfer(setTransfers, transferId, { transferred: file.size, status: "done" });
       } catch (error) {
-        showToast(error instanceof Error ? error.message : `Could not add ${file.name}.`);
+        const message = error instanceof Error ? error.message : `Could not add ${file.name}.`;
+        updateTransfer(setTransfers, transferId, { status: "failed", error: message });
+        showToast(message);
       }
     }
   };
@@ -1238,8 +1263,11 @@ export function App() {
       window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
       return;
     }
-    if (peerCount === 0) {
-      showToast("The file owner must be connected before you can request this file.");
+    const connectedIds = new Set(presences.map((presence) => presence.peerId));
+    const provider = (file.providers?.length ? file.providers : [file.owner])
+      .find((peerId) => connectedIds.has(peerId));
+    if (!provider) {
+      showToast("No peer with this file is online. Try again when a provider reconnects.");
       return;
     }
     const transferId = crypto.randomUUID();
@@ -1263,14 +1291,59 @@ export function App() {
         transferred: 0,
         total: file.size,
         status: "running",
+        startedAt: Date.now(),
       },
     ]);
     await session.mesh.send({
       type: "file-request",
-      target: file.owner,
+      target: provider,
       fileId: file.id,
       transferId,
     });
+    window.setTimeout(() => {
+      setTransfers((current) => current.map((transfer) => {
+        if (transfer.id !== transferId || transfer.status !== "running" || transfer.transferred > 0) return transfer;
+        sinks.current.delete(transferId);
+        return { ...transfer, status: "failed", error: "The provider did not start the transfer. Try another online peer." };
+      }));
+    }, 30_000);
+  };
+
+  const previewSharedFile = async (file: SharedFile) => {
+    if (!session) return;
+    const blob = await getFile(session.roomId, file.id);
+    if (!blob) {
+      showToast("Download this file before previewing it.");
+      return;
+    }
+    setPreviewFile({ file, blob });
+  };
+
+  const shareFileInvite = async (file: SharedFile) => {
+    if (!session) return;
+    setShareBusy(true);
+    setShareError("");
+    try {
+      const token = await session.mesh.createInvite(session.locked, session.salt, "read");
+      const url = `${location.origin}${location.pathname}#invite=${encodeURIComponent(token)}`;
+      setInviteLink(url);
+      setShareOpen(true);
+      const text = `${localName} shared “${file.name}” (${(file.size / 1024 / 1024).toFixed(1)} MB) through p2p-share. This one-time read-only invite connects your browsers directly so you can request the file.`;
+      const nativeShare = navigator.share;
+      if (typeof nativeShare === "function") await nativeShare.call(navigator, { title: `Shared file: ${file.name}`, text, url });
+      else {
+        await navigator.clipboard.writeText(`${text}\n${url}`);
+        showToast("File invite copied");
+      }
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError") {
+        const message = error instanceof Error ? error.message : "This browser could not create the file invite.";
+        setShareError(message);
+        showToast(message);
+      }
+    } finally {
+      setShareBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -1300,6 +1373,7 @@ export function App() {
     { id: "preview", label: "Open safe preview", detail: "Preview this project in an isolated sandbox", run: () => setWorkbenchOpen(true) },
     { id: "new-file", label: "Create project file", detail: "Add a collaborative file or path", run: () => createProjectFile() },
     { id: "project", label: "Toggle project explorer", detail: "Show the project file tree and manifest", run: () => setProjectOpen((value) => !value) },
+    { id: "files", label: "Share files", detail: "Upload, preview, request, and monitor direct peer transfers", run: () => setFilesOpen(true) },
     { id: "share", label: "Invite a peer", detail: "Create editable or read-only invite links and QR codes", run: () => setShareOpen(true) },
     { id: "settings", label: "Editor settings", detail: "Theme, font, tab width, minimap and keybindings", run: () => setSecurityOpen(true) },
   ], [activeMeta, activeText, isReadOnly, session, tabSize]);
@@ -1384,6 +1458,9 @@ export function App() {
             {peerCount ? `${peerCount + 1} here` : "Only you"}
           </button>
           <div className="desktop-tools">
+            <button className="icon-button top-icon" onClick={() => setFilesOpen((value) => !value)} aria-label="Open direct file sharing" title="Share files">
+              <Icon name="attachment" />
+            </button>
             <button className="icon-button top-icon" onClick={() => setProjectOpen((value) => !value)} aria-label="Toggle project explorer" title="Project explorer">
               <Icon name="folder" />
             </button>
@@ -1507,9 +1584,25 @@ export function App() {
           files={sharedFiles}
           localFiles={localFiles}
           transfers={transfers}
+          onlinePeerIds={new Set(presences.map((presence) => presence.peerId))}
+          currentPeerId={session.mesh.peerId}
+          readOnly={isReadOnly}
           onUpload={(files) => void uploadFiles(files)}
           onDownload={(file) => void downloadFile(file)}
-          onRemove={(file) => session.files.delete(file.id)}
+          onPreview={(file) => void previewSharedFile(file)}
+          onShare={(file) => void shareFileInvite(file)}
+          onRemove={(file) => {
+            if (isReadOnly) return;
+            session.files.delete(file.id);
+            setLocalFiles((current) => {
+              const next = new Set(current);
+              next.delete(file.id);
+              return next;
+            });
+            void deleteFile(session.roomId, file.id);
+            showToast(`${file.name} removed from the room`);
+          }}
+          onClearTransfers={() => setTransfers([])}
           onClose={() => setFilesOpen(false)}
         />
         <main className="editor-shell">
@@ -1547,6 +1640,7 @@ export function App() {
               {isReadOnly ? "Read-only invite" : session.locked ? "Password protected" : "WebRTC encrypted"}
             </span>
             <div className="mobile-editor-actions">
+              <button onClick={() => setFilesOpen(true)} aria-label="Share files"><Icon name="attachment" /></button>
               <button onClick={() => setRunnerOpen((value) => !value)} aria-label="Run code"><Icon name="play" /></button>
               <button onClick={() => setActivityOpen(true)} aria-label="Version logs"><Icon name="history" /></button>
               <button onClick={() => setReviewOpen(true)} aria-label="Code review"><Icon name="review" /></button>
@@ -1741,7 +1835,7 @@ export function App() {
         <button className="mobile-share" onClick={() => setShareOpen(true)}><Icon name="share" /><span>Share</span></button>
         <button onClick={exportDocument}><Icon name="download" /><span>Save</span></button>
         <button onClick={() => setSecurityOpen(true)}><Icon name="settings" /><span>Settings</span></button>
-        <button onClick={() => setCallOpen(true)}><Icon name="video" /><span>Call</span></button>
+        <button onClick={() => setFilesOpen(true)}><Icon name="attachment" /><span>Files</span></button>
       </nav>
 
       <CallPanel
@@ -1987,6 +2081,20 @@ export function App() {
       </Dialog>
 
       <CommandPalette open={commandOpen} commands={commands} onClose={() => setCommandOpen(false)} />
+      <FilePreviewDialog
+        file={previewFile?.file}
+        blob={previewFile?.blob}
+        onClose={() => setPreviewFile(undefined)}
+        onDownload={() => {
+          if (!previewFile) return;
+          const url = URL.createObjectURL(previewFile.blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = previewFile.file.name;
+          anchor.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        }}
+      />
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );
@@ -2015,20 +2123,28 @@ async function sendFile(
       transferred: 0,
       total: file.size,
       status: "running",
+      startedAt: Date.now(),
     },
   ]);
-  for (let offset = 0, index = 0; offset < file.size; offset += FILE_CHUNK_SIZE, index += 1) {
-    const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer());
-    await session.mesh.send({
-      type: "file-chunk",
-      target,
-      transferId,
-      index,
-      offset,
-      data: bytesToBase64(bytes),
-    });
-    updateTransfer(setTransfers, transferId, { transferred: offset + bytes.length });
+  try {
+    for (let offset = 0, index = 0; offset < file.size; offset += FILE_CHUNK_SIZE, index += 1) {
+      const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer());
+      await session.mesh.send({
+        type: "file-chunk",
+        target,
+        transferId,
+        index,
+        offset,
+        data: bytesToBase64(bytes),
+      });
+      updateTransfer(setTransfers, transferId, { transferred: offset + bytes.length });
+    }
+    await session.mesh.send({ type: "file-end", target, transferId });
+    updateTransfer(setTransfers, transferId, { status: "done", transferred: file.size });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The file transfer failed.";
+    updateTransfer(setTransfers, transferId, { status: "failed", error: message });
+    await session.mesh.send({ type: "file-error", target, transferId, message }).catch(() => undefined);
+    throw error;
   }
-  await session.mesh.send({ type: "file-end", target, transferId });
-  updateTransfer(setTransfers, transferId, { status: "done", transferred: file.size });
 }

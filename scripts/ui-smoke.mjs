@@ -37,6 +37,20 @@ async function exercise(viewport, label) {
   if (!previewPolicy?.includes("connect-src 'none'") || !previewPolicy.includes("form-action 'none'")) {
     throw new Error(`${label} preview CSP is incomplete.`);
   }
+  await workbench.getByRole("button", { name: "Close workbench" }).click();
+  if (label === "desktop") await page.getByRole("button", { name: "Open direct file sharing" }).click();
+  else await page.getByLabel("Room actions").getByRole("button", { name: "Files", exact: true }).click();
+  const sharedFiles = page.getByRole("complementary", { name: "Shared files" });
+  await sharedFiles.waitFor();
+  await sharedFiles.locator('input[type="file"]').setInputFiles({
+    name: "hello.txt",
+    mimeType: "text/plain",
+    buffer: globalThis.Buffer.from("Hello from p2p"),
+  });
+  await sharedFiles.getByText("hello.txt", { exact: true }).waitFor();
+  await sharedFiles.getByRole("button", { name: "Preview hello.txt" }).click();
+  await page.getByRole("dialog").getByText("Hello from p2p", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   const dimensions = await page.evaluate(() => ({
     width: globalThis.innerWidth,
     scrollWidth: globalThis.document.documentElement.scrollWidth,
