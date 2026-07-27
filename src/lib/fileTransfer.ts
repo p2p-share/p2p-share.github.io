@@ -1,6 +1,22 @@
 import { base64ToBytes, bytesToBase64 } from "./encoding";
 
 const encoder = new TextEncoder();
+export const DEFAULT_TRANSFER_CHUNK_SIZE = 60 * 1024;
+export const MAX_TRANSFER_CHUNK_SIZE = 256 * 1024;
+const BINARY_PACKET_RESERVE = 8 * 1024;
+
+export function recommendedTransferChunkSize(maxMessageSize?: number) {
+  if (maxMessageSize === 0) {
+    return MAX_TRANSFER_CHUNK_SIZE;
+  }
+  if (!maxMessageSize || !Number.isFinite(maxMessageSize) || maxMessageSize < 1024) {
+    return DEFAULT_TRANSFER_CHUNK_SIZE;
+  }
+  return Math.max(
+    1024,
+    Math.min(MAX_TRANSFER_CHUNK_SIZE, Math.floor(maxMessageSize) - BINARY_PACKET_RESERVE),
+  );
+}
 
 function chunkAad(transferId: string, index: number) {
   return encoder.encode(`p2p-share:file:v2:${transferId}:${index}`);

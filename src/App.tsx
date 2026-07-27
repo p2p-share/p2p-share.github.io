@@ -39,6 +39,7 @@ import { base64ToBytes, bytesToBase64 } from "./lib/encoding";
 import {
   chunkDigest,
   createTransferKey,
+  DEFAULT_TRANSFER_CHUNK_SIZE,
   decryptTransferChunk,
   encryptTransferChunk,
   exportTransferKey,
@@ -94,6 +95,8 @@ type IncomingSink = {
   expectedIndex: number;
   receivedBytes: number;
   expectedChunks?: number;
+  lastProgressAt: number;
+  startedAt: number;
 };
 
 type InstallPromptEvent = Event & {
@@ -111,7 +114,9 @@ type WorkspacePanel = "project" | "files" | "workbench" | "runner" | "activity" 
 const MAX_FILE_SIZE = 1024 ** 3;
 const MAX_EDITOR_FILE_SIZE = 512 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
-const FILE_CHUNK_SIZE = 60 * 1024;
+const FILE_CHUNK_SIZE = DEFAULT_TRANSFER_CHUNK_SIZE;
+const TRANSFER_CRYPTO_PIPELINE = 4;
+const PROGRESS_UPDATE_INTERVAL_MS = 120;
 const STREAM_IMPORT_ORIGIN = "stream-import";
 const ROOM_PASSWORD_MARKER = "p2p-share-room-password-v1";
 const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
@@ -795,12 +800,19 @@ export function App() {
             sink.chunkDigests.push(chunkHash);
             sink.expectedIndex += 1;
             sink.receivedBytes += bytes.length;
-            const elapsed = Math.max(0.25, (Date.now() - Number(body.startedAt)) / 1000);
-            updateTransfer(setTransfers, transferId, {
-              transferred: sink.receivedBytes,
-              bytesPerSecond: sink.receivedBytes / elapsed,
-              phase: "transferring",
-            });
+            const now = Date.now();
+            if (
+              now - sink.lastProgressAt >= PROGRESS_UPDATE_INTERVAL_MS
+              || sink.receivedBytes === sink.file.size
+            ) {
+              const elapsed = Math.max(0.25, (now - sink.startedAt) / 1000);
+              updateTransfer(setTransfers, transferId, {
+                transferred: sink.receivedBytes,
+                bytesPerSecond: sink.receivedBytes / elapsed,
+                phase: "transferring",
+              });
+              sink.lastProgressAt = now;
+            }
           }).catch(async (error) => {
             const message = error instanceof Error ? error.message : "Encrypted file transfer failed.";
             updateTransfer(setTransfers, transferId, { status: "failed", error: message });
@@ -1698,6 +1710,8 @@ export function App() {
       chunkDigests: [],
       expectedIndex: 0,
       receivedBytes: 0,
+      lastProgressAt: 0,
+      startedAt: Date.now(),
     });
     setTransfers((current) => [
       ...current,
@@ -2644,45 +2658,66 @@ async function sendFile(
   try {
     const startedAt = Date.now();
     const transferKey = await createTransferKey();
-    const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
+    const chunkSize = session.mesh.recommendedFileChunkSize(target) || FILE_CHUNK_SIZE;
+    const totalChunks = Math.ceil(file.size / chunkSize);
     await session.mesh.sendTo(target, {
       type: "file-start",
       target,
       transferId,
       protocol: 2,
       key: await exportTransferKey(transferKey),
-      chunkSize: FILE_CHUNK_SIZE,
+      chunkSize,
       totalChunks,
     });
     const chunkDigests: string[] = [];
     let offset = 0;
     let index = 0;
-    for await (const bytes of streamBlobChunks(file, FILE_CHUNK_SIZE)) {
-      const [hash, encrypted] = await Promise.all([
-        chunkDigest(bytes),
-        encryptTransferChunk(bytes, transferKey, transferId, index),
-      ]);
-      chunkDigests.push(hash);
-      await session.mesh.sendBinaryTo(target, {
-        type: "file-chunk-v2",
-        target,
-        transferId,
-        index,
-        offset,
-        iv: encrypted.iv,
-        hash,
-        startedAt,
-      }, encrypted.payload);
-      const transferred = offset + bytes.length;
-      const elapsed = Math.max(0.25, (Date.now() - startedAt) / 1000);
-      updateTransfer(setTransfers, transferId, {
-        transferred,
-        bytesPerSecond: transferred / elapsed,
-        phase: "transferring",
-      });
+    let lastProgressAt = 0;
+    let batch: Array<{ bytes: Uint8Array; index: number; offset: number }> = [];
+    const flushBatch = async () => {
+      const prepared = await Promise.all(batch.map(async (item) => {
+        const [hash, encrypted] = await Promise.all([
+          chunkDigest(item.bytes),
+          encryptTransferChunk(item.bytes, transferKey, transferId, item.index),
+        ]);
+        return { ...item, hash, encrypted };
+      }));
+      batch = [];
+      for (const item of prepared) {
+        chunkDigests.push(item.hash);
+        await session.mesh.sendBinaryTo(target, {
+          type: "file-chunk-v2",
+          target,
+          transferId,
+          index: item.index,
+          offset: item.offset,
+          iv: item.encrypted.iv,
+          hash: item.hash,
+          startedAt,
+        }, item.encrypted.payload);
+        const transferred = item.offset + item.bytes.length;
+        const now = Date.now();
+        if (
+          now - lastProgressAt >= PROGRESS_UPDATE_INTERVAL_MS
+          || transferred === file.size
+        ) {
+          const elapsed = Math.max(0.25, (now - startedAt) / 1000);
+          updateTransfer(setTransfers, transferId, {
+            transferred,
+            bytesPerSecond: transferred / elapsed,
+            phase: "transferring",
+          });
+          lastProgressAt = now;
+        }
+      }
+    };
+    for await (const bytes of streamBlobChunks(file, chunkSize)) {
+      batch.push({ bytes, index, offset });
       offset += bytes.length;
       index += 1;
+      if (batch.length >= TRANSFER_CRYPTO_PIPELINE) await flushBatch();
     }
+    if (batch.length) await flushBatch();
     await session.mesh.sendTo(target, {
       type: "file-end-v2",
       target,

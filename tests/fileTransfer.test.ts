@@ -5,11 +5,20 @@ import {
   encryptTransferChunk,
   exportTransferKey,
   importTransferKey,
+  MAX_TRANSFER_CHUNK_SIZE,
+  recommendedTransferChunkSize,
   streamBlobChunks,
   transferDigest,
 } from "../src/lib/fileTransfer";
 
 describe("encrypted direct file transfer", () => {
+  it("negotiates larger chunks without exceeding the peer SCTP message limit", () => {
+    expect(recommendedTransferChunkSize()).toBe(60 * 1024);
+    expect(recommendedTransferChunkSize(0)).toBe(MAX_TRANSFER_CHUNK_SIZE);
+    expect(recommendedTransferChunkSize(1024 * 1024)).toBe(MAX_TRANSFER_CHUNK_SIZE);
+    expect(recommendedTransferChunkSize(65_536)).toBe(65_536 - 8 * 1024);
+  });
+
   it("encrypts, authenticates, and decrypts a binary chunk", async () => {
     const senderKey = await createTransferKey();
     const receiverKey = await importTransferKey(await exportTransferKey(senderKey));

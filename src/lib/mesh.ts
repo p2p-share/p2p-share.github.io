@@ -1,5 +1,6 @@
 import { decryptBytes, encryptBytes } from "./crypto";
 import { decodeJson, encodeJson } from "./encoding";
+import { recommendedTransferChunkSize } from "./fileTransfer";
 import {
   decodeSignal,
   encodeSignal,
@@ -52,7 +53,8 @@ type MeshEvents = {
 };
 
 const MAX_FRAGMENT = 24 * 1024;
-const HIGH_WATER = 2 * 1024 * 1024;
+const HIGH_WATER = 8 * 1024 * 1024;
+const LOW_WATER = 2 * 1024 * 1024;
 const BINARY_MAGIC = new Uint8Array([0x50, 0x32, 0x50, 0x46]);
 export const MAX_DIRECT_PEERS = 16;
 
@@ -107,6 +109,13 @@ export class PeerMesh extends EventTarget {
     return [...this.links.values()].some(
       (link) => link.remotePeerId === peerId && link.channel?.readyState === "open",
     );
+  }
+
+  recommendedFileChunkSize(peerId: string) {
+    const link = [...this.links.values()].find(
+      (candidate) => candidate.remotePeerId === peerId && candidate.channel?.readyState === "open",
+    );
+    return recommendedTransferChunkSize(link?.pc.sctp?.maxMessageSize);
   }
 
   on<K extends keyof MeshEvents>(event: K, listener: (event: MeshEvents[K]) => void) {
@@ -169,7 +178,7 @@ export class PeerMesh extends EventTarget {
   private attachChannel(link: Link, channel: RTCDataChannel) {
     link.channel = channel;
     channel.binaryType = "arraybuffer";
-    channel.bufferedAmountLowThreshold = 512 * 1024;
+    channel.bufferedAmountLowThreshold = LOW_WATER;
     channel.onopen = () => {
       this.links.set(link.id, link);
       void this.sendEnvelopeOnLink(link, {
