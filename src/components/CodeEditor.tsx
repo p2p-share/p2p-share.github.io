@@ -38,10 +38,16 @@ export function CodeEditor({
   text,
   language,
   dark,
+  fontSize,
+  lineWrap,
+  largeDocument,
 }: {
   text: Y.Text;
   language: string;
   dark: boolean;
+  fontSize: number;
+  lineWrap: boolean;
+  largeDocument: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [languageExtension, setLanguageExtension] = useState<Extension>([]);
@@ -66,7 +72,7 @@ export function CodeEditor({
           height: "100%",
           color: dark ? "#e4e4e7" : "#27272a",
           backgroundColor: dark ? "#111113" : "#ffffff",
-          fontSize: "14px",
+          fontSize: `${fontSize}px`,
         },
         ".cm-content": {
           fontFamily: '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
@@ -110,21 +116,28 @@ export function CodeEditor({
         basicSetup,
         lineNumbers(),
         keymap.of([]),
-        languageExtension,
+        largeDocument ? [] : languageExtension,
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         theme,
         updateListener,
-        EditorView.lineWrapping,
+        lineWrap ? EditorView.lineWrapping : [],
       ],
     });
     const view = new EditorView({ state, parent: hostRef.current });
     const observer = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
       if (transaction.origin === localOrigin) return;
-      const next = text.toString();
-      const current = view.state.doc.toString();
-      if (next === current) return;
       applyingRemote = true;
-      view.dispatch({ changes: { from: 0, to: current.length, insert: next } });
+      let position = 0;
+      for (const operation of _event.delta) {
+        if (operation.retain) position += operation.retain;
+        if (operation.delete) {
+          view.dispatch({ changes: { from: position, to: position + operation.delete } });
+        }
+        if (typeof operation.insert === "string") {
+          view.dispatch({ changes: { from: position, insert: operation.insert } });
+          position += operation.insert.length;
+        }
+      }
       applyingRemote = false;
     };
     text.observe(observer);
@@ -132,7 +145,7 @@ export function CodeEditor({
       text.unobserve(observer);
       view.destroy();
     };
-  }, [text, languageExtension, dark]);
+  }, [text, languageExtension, dark, fontSize, lineWrap, largeDocument]);
 
   return <div className="editor-host" ref={hostRef} aria-label="Collaborative code editor" />;
 }

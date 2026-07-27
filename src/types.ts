@@ -26,6 +26,15 @@ export type Presence = {
   local?: boolean;
 };
 
+export type ChatMessage = {
+  id: string;
+  peerId: string;
+  sender: string;
+  color: string;
+  text: string;
+  sentAt: number;
+};
+
 export type Transfer = {
   id: string;
   fileId: string;

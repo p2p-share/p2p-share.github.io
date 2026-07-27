@@ -1,5 +1,6 @@
 import type { RoomRecord } from "../types";
 
+// Retain the legacy storage name so the product rename does not erase existing rooms.
 const DB_NAME = "sharecode";
 const DB_VERSION = 1;
 

@@ -25,7 +25,7 @@ export const encodeSignal = (signal: InviteToken | AnswerToken) => encodeToken(s
 export async function decodeSignal(token: string): Promise<InviteToken | AnswerToken> {
   const value = await decodeToken<InviteToken | AnswerToken>(token.trim());
   if (value.v !== 1 || !["invite", "answer"].includes(value.kind)) {
-    throw new Error("This is not a valid ShareCode invite or answer.");
+    throw new Error("This is not a valid p2p-share invite or answer.");
   }
   return value;
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
+import { ChatPanel } from "./components/ChatPanel";
 import { CodeEditor, languages } from "./components/CodeEditor";
 import { Dialog } from "./components/Dialog";
 import { FilesPanel } from "./components/FilesPanel";
@@ -7,10 +8,11 @@ import { Icon } from "./components/Icons";
 import { ShareDialog } from "./components/ShareDialog";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
 import { deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
+import { documentFilename, documentStats, downloadText } from "./lib/document";
 import { base64ToBytes, bytesToBase64 } from "./lib/encoding";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
 import type { InviteToken } from "./lib/signaling";
-import type { Presence, RoomRecord, SharedFile, Transfer } from "./types";
+import type { ChatMessage, Presence, RoomRecord, SharedFile, Transfer } from "./types";
 
 type Session = {
   roomId: string;
@@ -18,6 +20,7 @@ type Session = {
   text: Y.Text;
   meta: Y.Map<unknown>;
   files: Y.Map<SharedFile>;
+  messages: Y.Array<ChatMessage>;
   mesh: PeerMesh;
   key?: CryptoKey;
   locked: boolean;
@@ -38,7 +41,14 @@ type IncomingSink = {
   chain: Promise<void>;
 };
 
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+
 const MAX_FILE_SIZE = 1024 ** 3;
+const MAX_EDITOR_FILE_SIZE = 256 * 1024 ** 2;
+const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
 const FILE_CHUNK_SIZE = 48 * 1024;
 const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
 
@@ -84,13 +94,29 @@ export function App() {
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState("");
   const [filesOpen, setFilesOpen] = useState(() => window.innerWidth > 780);
+  const [chatOpen, setChatOpen] = useState(false);
   const [securityOpen, setSecurityOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [securityError, setSecurityError] = useState("");
   const [dark, setDark] = useState(() => localStorage.getItem("sharecode:theme") !== "light");
+  const [fontSize, setFontSize] = useState(() =>
+    Math.min(20, Math.max(12, Number(localStorage.getItem("sharecode:font-size")) || 14)),
+  );
+  const [lineWrap, setLineWrap] = useState(
+    () => localStorage.getItem("sharecode:line-wrap") !== "off",
+  );
+  const needsOnboarding = useRef(!sessionStorage.getItem("sharecode:guest-name"));
+  const [onboardingOpen, setOnboardingOpen] = useState(needsOnboarding.current);
+  const [onboardingError, setOnboardingError] = useState("");
+  const [localName, setLocalName] = useState(randomGuestName);
+  const [nameDraft, setNameDraft] = useState(localName);
+  const [dragActive, setDragActive] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent>();
   const [recovery, setRecovery] = useState(true);
   const [revision, setRevision] = useState(0);
+  const [stats, setStats] = useState({ lines: 1, words: 0, characters: 0 });
   const [peerCount, setPeerCount] = useState(0);
   const [presences, setPresences] = useState<Presence[]>([]);
   const [localFiles, setLocalFiles] = useState<Set<string>>(new Set());
@@ -99,8 +125,30 @@ export function App() {
   const bootStarted = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const sinks = useRef(new Map<string, IncomingSink>());
-  const localName = useMemo(randomGuestName, []);
+  const importInput = useRef<HTMLInputElement>(null);
+  const localNameRef = useRef(localName);
   const localColor = useMemo(() => palette[Math.floor(Math.random() * palette.length)], []);
+
+  useEffect(() => {
+    localNameRef.current = localName;
+  }, [localName]);
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    const handleInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("beforeinstallprompt", handleInstall);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("beforeinstallprompt", handleInstall);
+    };
+  }, []);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -120,6 +168,7 @@ export function App() {
       const text = doc.getText("content");
       const meta = doc.getMap("meta");
       const files = doc.getMap<SharedFile>("files");
+      const messages = doc.getArray<ChatMessage>("chat");
       if (!meta.has("name")) meta.set("name", bootState.record?.name || "untitled");
       if (!meta.has("language")) meta.set("language", bootState.record?.language || "javascript");
       const locked = Boolean(bootState.record?.locked || bootState.invite?.locked);
@@ -134,12 +183,12 @@ export function App() {
         }
       }
       setLocalFiles(new Set(availableIds));
-      setSession({ roomId: bootState.roomId, doc, text, meta, files, mesh, key, locked, salt });
+      setSession({ roomId: bootState.roomId, doc, text, meta, files, messages, mesh, key, locked, salt });
       const recoverySetting = localStorage.getItem(`sharecode:recovery:${bootState.roomId}`) !== "off";
       setRecovery(recoverySetting);
       history.replaceState(null, "", roomUrl(bootState.roomId));
       setReady(true);
-      if (bootState.inviteToken) setShareOpen(true);
+      if (bootState.inviteToken && !needsOnboarding.current) setShareOpen(true);
     },
     [],
   );
@@ -209,11 +258,20 @@ export function App() {
 
   useEffect(() => {
     if (!session) return;
+    const timer = window.setTimeout(
+      () => setStats(documentStats(session.text.toString())),
+      session.text.length > LARGE_DOCUMENT_THRESHOLD ? 900 : 250,
+    );
+    return () => window.clearTimeout(timer);
+  }, [revision, session]);
+
+  useEffect(() => {
+    if (!session) return;
     const sendPresence = () =>
       void session.mesh.send({
         type: "presence",
         peerId: session.mesh.peerId,
-        name: localName,
+        name: localNameRef.current,
         color: localColor,
         seenAt: Date.now(),
       });
@@ -339,7 +397,7 @@ export function App() {
       window.clearInterval(heartbeat);
       session.mesh.disconnect();
     };
-  }, [localColor, localName, session, showToast]);
+  }, [localColor, session, showToast]);
 
   const unlock = async () => {
     if (!boot) return;
@@ -477,6 +535,122 @@ export function App() {
     }
   };
 
+  const copyDocument = async () => {
+    if (!session) return;
+    try {
+      await navigator.clipboard.writeText(session.text.toString());
+      showToast("Code copied to clipboard");
+    } catch {
+      showToast("Clipboard access was blocked by this browser.");
+    }
+  };
+
+  const exportDocument = () => {
+    if (!session) return;
+    const name = String(session.meta.get("name") || "untitled");
+    const language = String(session.meta.get("language") || "text");
+    downloadText(session.text.toString(), documentFilename(name, language));
+    showToast("Document downloaded");
+  };
+
+  const importDocument = async (file?: File) => {
+    if (!session || !file) return;
+    if (file.size > MAX_EDITOR_FILE_SIZE) {
+      showToast("The collaborative editor accepts text files up to 256 MB. Share larger files as attachments.");
+      return;
+    }
+    const current = session.text.toString();
+    if (current && !window.confirm("Replace the current editor contents with this file?")) return;
+    try {
+      const content = await file.text();
+      if (session.text.length) session.text.delete(0, session.text.length);
+      const chunkSize = 1024 * 1024;
+      for (let offset = 0; offset < content.length; offset += chunkSize) {
+        session.text.insert(session.text.length, content.slice(offset, offset + chunkSize));
+        if (offset && offset % (8 * chunkSize) === 0) {
+          showToast(`Opening ${Math.round((offset / content.length) * 100)}%…`);
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+      session.meta.set("name", file.name.replace(/\.[^.]+$/, "") || "untitled");
+      showToast(`${file.name} opened`);
+    } catch {
+      showToast("This file could not be read as text.");
+    }
+  };
+
+  const clearDocument = () => {
+    if (!session?.text.length || !window.confirm("Clear the collaborative editor for everyone?")) return;
+    session.text.delete(0, session.text.length);
+    showToast("Editor cleared");
+  };
+
+  const createNewRoom = () => {
+    if (
+      session?.text.length &&
+      !window.confirm("Create a new room? Your current room remains available from its recovery link.")
+    ) {
+      return;
+    }
+    location.href = `${location.pathname}#room=${newRoomId()}`;
+    location.reload();
+  };
+
+  const savePreferences = () => {
+    const nextName = nameDraft.trim() || randomGuestName();
+    sessionStorage.setItem("sharecode:guest-name", nextName);
+    localStorage.setItem("sharecode:font-size", String(fontSize));
+    localStorage.setItem("sharecode:line-wrap", lineWrap ? "on" : "off");
+    setLocalName(nextName);
+    setNameDraft(nextName);
+    void session?.mesh.send({
+      type: "presence",
+      peerId: session.mesh.peerId,
+      name: nextName,
+      color: localColor,
+      seenAt: Date.now(),
+    });
+    setSecurityOpen(false);
+    showToast("Preferences saved");
+  };
+
+  const completeOnboarding = () => {
+    const nextName = nameDraft.trim();
+    if (nextName.length < 2) {
+      setOnboardingError("Enter at least 2 characters.");
+      return;
+    }
+    sessionStorage.setItem("sharecode:guest-name", nextName);
+    needsOnboarding.current = false;
+    setLocalName(nextName);
+    setNameDraft(nextName);
+    setOnboardingError("");
+    setOnboardingOpen(false);
+    void session?.mesh.send({
+      type: "presence",
+      peerId: session.mesh.peerId,
+      name: nextName,
+      color: localColor,
+      seenAt: Date.now(),
+    });
+    if (boot?.inviteToken) setShareOpen(true);
+  };
+
+  const sendChatMessage = (text: string) => {
+    const value = text.trim();
+    if (!value || !session) return;
+    session.messages.push([{
+      id: crypto.randomUUID(),
+      peerId: session.mesh.peerId,
+      sender: localName,
+      color: localColor,
+      text: value.slice(0, 2000),
+      sentAt: Date.now(),
+    }]);
+    const overflow = session.messages.length - 500;
+    if (overflow > 0) session.messages.delete(0, overflow);
+  };
+
   const downloadFile = async (file: SharedFile) => {
     if (!session) return;
     const local = await getFile(session.roomId, file.id);
@@ -524,10 +698,25 @@ export function App() {
     });
   };
 
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (!session) return;
+        const name = String(session.meta.get("name") || "untitled");
+        const language = String(session.meta.get("language") || "text");
+        downloadText(session.text.toString(), documentFilename(name, language));
+        showToast("Document downloaded");
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [session, showToast]);
+
   if (!ready || !session) {
     return (
       <main className="loading-screen">
-        <div className="brand-mark"><Icon name="braces" /></div>
+        <div className="brand-mark"><img src="./logo.png" alt="" /></div>
         <span>{unlockOpen ? "Private room" : "Preparing your room…"}</span>
         <Dialog
           open={unlockOpen}
@@ -567,8 +756,8 @@ export function App() {
     <div className={`app ${dark ? "dark" : "light"}`} data-revision={revision}>
       <header className="topbar">
         <button className="brand" onClick={() => setFilesOpen((value) => !value)} aria-label="Toggle shared files">
-          <span className="brand-mark"><Icon name="braces" /></span>
-          <span>ShareCode</span>
+          <span className="brand-mark"><img src="./logo.png" alt="" /></span>
+          <span>p2p-share</span>
         </button>
         <div className="document-name">
           <span className="save-dot" title={recovery ? "Saved locally" : "Ephemeral mode"} />
@@ -595,6 +784,20 @@ export function App() {
             <span className={`status-dot ${peerCount ? "online" : ""}`} />
             {peerCount ? `${peerCount + 1} here` : "Only you"}
           </button>
+          <div className="desktop-tools">
+            <button className="icon-button top-icon" onClick={() => setChatOpen((value) => !value)} aria-label="Open group chat" title="Group chat">
+              <Icon name="chat" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => importInput.current?.click()} aria-label="Open text file" title="Open text file">
+              <Icon name="edit" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => void copyDocument()} aria-label="Copy code" title="Copy code">
+              <Icon name="copy" />
+            </button>
+            <button className="icon-button top-icon" onClick={exportDocument} aria-label="Download code" title="Download code (Ctrl+S)">
+              <Icon name="download" />
+            </button>
+          </div>
           <button className="share-button" onClick={() => setShareOpen(true)}>
             <Icon name="share" />
             <span>Share</span>
@@ -611,12 +814,44 @@ export function App() {
             <Icon name={dark ? "sun" : "moon"} />
           </button>
           <button className="icon-button top-icon" onClick={() => setSecurityOpen(true)} aria-label="Privacy settings">
-            <Icon name={session.locked ? "lock" : "shield"} />
+            <Icon name="settings" />
           </button>
         </div>
       </header>
 
-      <div className="workspace">
+      <input
+        ref={importInput}
+        type="file"
+        hidden
+        onChange={(event) => {
+          void importDocument(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+
+      <div
+        className="workspace"
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes("Files")) setDragActive(true);
+        }}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+        }}
+        onDragLeave={(event) => {
+          if (
+            !event.relatedTarget ||
+            !event.currentTarget.contains(event.relatedTarget as Node)
+          ) {
+            setDragActive(false);
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragActive(false);
+          if (event.dataTransfer.files.length) void uploadFiles(event.dataTransfer.files);
+        }}
+      >
+        {(filesOpen || chatOpen) && <button className="files-scrim" aria-label="Close side panel" onClick={() => { setFilesOpen(false); setChatOpen(false); }} />}
         <FilesPanel
           open={filesOpen}
           files={sharedFiles}
@@ -633,6 +868,10 @@ export function App() {
               <Icon name="menu" />
               Files
             </button>
+            <button className="mobile-import" onClick={() => importInput.current?.click()}>
+              <Icon name="upload" />
+              Import
+            </button>
             <label className="select-wrap">
               <span className="sr-only">Syntax language</span>
               <select value={language} onChange={(event) => session.meta.set("language", event.target.value)}>
@@ -645,11 +884,60 @@ export function App() {
               {session.locked ? "Password protected" : "WebRTC encrypted"}
             </span>
             <span className="toolbar-spacer" />
-            <span className="local-state">{recovery ? "Local recovery on" : "Ephemeral mode"}</span>
+            <button className="toolbar-action" onClick={() => importInput.current?.click()} title="Import a code or text file into the collaborative editor">
+              <Icon name="upload" /> Import code
+            </button>
+            <button className="toolbar-action" onClick={createNewRoom} title="Create a new room">
+              <Icon name="new" /> New
+            </button>
+            <button className="toolbar-action" onClick={clearDocument} disabled={!session.text.length} title="Clear editor">
+              <Icon name="trash" /> Clear
+            </button>
           </div>
-          <CodeEditor text={session.text} language={language} dark={dark} />
+          <CodeEditor
+            text={session.text}
+            language={language}
+            dark={dark}
+            fontSize={fontSize}
+            lineWrap={lineWrap}
+            largeDocument={session.text.length > LARGE_DOCUMENT_THRESHOLD}
+          />
+          <footer className="editor-statusbar">
+            <span className={`network-state ${online ? "online" : "offline"}`}>
+              <span />
+              {online ? "Ready for peers" : "Offline editing"}
+            </span>
+            <span>{stats.lines} {stats.lines === 1 ? "line" : "lines"}</span>
+            <span>{stats.words} {stats.words === 1 ? "word" : "words"}</span>
+            <span>{stats.characters} characters</span>
+            <span className="status-spacer" />
+            <span>{recovery ? "Saved locally" : "Ephemeral"}</span>
+          </footer>
         </main>
+        <ChatPanel
+          open={chatOpen}
+          messages={session.messages.toArray()}
+          peers={allPresence}
+          localPeerId={session.mesh.peerId}
+          onSend={sendChatMessage}
+          onClose={() => setChatOpen(false)}
+        />
+        {dragActive && (
+          <div className="drop-overlay">
+            <span><Icon name="upload" /></span>
+            <strong>Drop files to share</strong>
+            <small>Any file type, up to 1 GB each</small>
+          </div>
+        )}
       </div>
+
+      <nav className="mobile-nav" aria-label="Room actions">
+        <button onClick={() => { setChatOpen(false); setFilesOpen(true); }}><Icon name="folder" /><span>Files</span></button>
+        <button onClick={() => { setFilesOpen(false); setChatOpen(true); }}><Icon name="chat" /><span>Chat</span></button>
+        <button className="mobile-share" onClick={() => setShareOpen(true)}><Icon name="share" /><span>Share</span></button>
+        <button onClick={exportDocument}><Icon name="download" /><span>Save</span></button>
+        <button onClick={() => setSecurityOpen(true)}><Icon name="settings" /><span>Settings</span></button>
+      </nav>
 
       <ShareDialog
         open={shareOpen}
@@ -660,18 +948,97 @@ export function App() {
         joining={Boolean(boot?.inviteToken)}
         busy={shareBusy}
         error={shareError}
+        peerCount={peerCount}
         onCreateInvite={() => void createInvite()}
         onAcceptAnswer={(answer) => void acceptAnswer(answer)}
         onJoin={() => void joinInvite()}
       />
 
       <Dialog
+        open={onboardingOpen}
+        closeable={false}
+        title={boot?.inviteToken ? "You’ve been invited" : "Welcome to p2p-share"}
+        description={
+          boot?.inviteToken
+            ? "Choose the name your peers will see before joining the room."
+            : "Choose a display name for collaboration and group chat."
+        }
+      >
+        <div className="dialog-body stack onboarding">
+          <div className="onboarding-visual">
+            <span><Icon name="users" /></span>
+            <div><strong>Live, private collaboration</strong><small>Your name stays in this browser session.</small></div>
+          </div>
+          <div className="field-group">
+            <label htmlFor="onboarding-name">Your display name</label>
+            <input
+              id="onboarding-name"
+              autoFocus
+              maxLength={32}
+              value={nameDraft}
+              onChange={(event) => setNameDraft(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && completeOnboarding()}
+              placeholder="e.g. Alex"
+            />
+          </div>
+          <button className="primary-button" onClick={completeOnboarding}>
+            <Icon name={boot?.inviteToken ? "users" : "chevron"} />
+            {boot?.inviteToken ? "Continue to invitation" : "Enter workspace"}
+          </button>
+          {onboardingError && <p className="form-error" role="alert">{onboardingError}</p>}
+        </div>
+      </Dialog>
+
+      <Dialog
         open={securityOpen}
         onClose={() => setSecurityOpen(false)}
-        title="Privacy & local data"
-        description="Control application encryption and whether this browser keeps a recovery copy."
+        title="Settings & privacy"
+        description="Personalize the editor and control what this browser stores."
       >
         <div className="dialog-body stack">
+          <div className="settings-section">
+            <span className="section-label">Your experience</span>
+            <div className="field-group">
+              <label htmlFor="display-name">Display name</label>
+              <input
+                id="display-name"
+                maxLength={32}
+                value={nameDraft}
+                onChange={(event) => setNameDraft(event.target.value)}
+              />
+            </div>
+            <div className="preference-grid">
+              <div className="field-group">
+                <label htmlFor="font-size">Editor text</label>
+                <select
+                  id="font-size"
+                  value={fontSize}
+                  onChange={(event) => setFontSize(Number(event.target.value))}
+                >
+                  <option value="12">Small</option>
+                  <option value="14">Medium</option>
+                  <option value="16">Large</option>
+                  <option value="18">Extra large</option>
+                  <option value="20">Maximum</option>
+                </select>
+              </div>
+              <div className="setting-row compact">
+                <div>
+                  <strong>Wrap long lines</strong>
+                  <span>Fit code to narrow screens.</span>
+                </div>
+                <button
+                  className={`toggle ${lineWrap ? "on" : ""}`}
+                  role="switch"
+                  aria-checked={lineWrap}
+                  onClick={() => setLineWrap((value) => !value)}
+                >
+                  <span />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="divider"><span>privacy</span></div>
           <div className="setting-row">
             <div>
               <strong>Local recovery</strong>
@@ -739,6 +1106,26 @@ export function App() {
           >
             Clear this room from browser storage
           </button>
+          <div className="dialog-actions">
+            {installPrompt && (
+              <button
+                className="secondary-button"
+                onClick={async () => {
+                  await installPrompt.prompt();
+                  const choice = await installPrompt.userChoice;
+                  if (choice.outcome === "accepted") {
+                    setInstallPrompt(undefined);
+                    showToast("p2p-share installed");
+                  }
+                }}
+              >
+                <Icon name="install" /> Install app
+              </button>
+            )}
+            <button className="primary-button" onClick={savePreferences}>
+              Save settings
+            </button>
+          </div>
           {securityError && <p className="form-error" role="alert">{securityError}</p>}
         </div>
       </Dialog>
