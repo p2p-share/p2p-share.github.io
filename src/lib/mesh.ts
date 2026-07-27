@@ -555,8 +555,13 @@ export class PeerMesh extends EventTarget {
   private async waitForCapacity(channel: RTCDataChannel) {
     if (channel.bufferedAmount > HIGH_WATER) {
       await new Promise<void>((resolve, reject) => {
-        let timer: number | undefined;
-        let pollTimer: number | undefined;
+        const cleanup = () => {
+          window.clearInterval(pollTimer);
+          window.clearTimeout(timer);
+          channel.removeEventListener("bufferedamountlow", done);
+          channel.removeEventListener("close", closed);
+          channel.removeEventListener("error", closed);
+        };
         const done = () => {
           cleanup();
           resolve();
@@ -570,18 +575,11 @@ export class PeerMesh extends EventTarget {
             done();
           }
         };
-        const cleanup = () => {
-          if (timer) window.clearTimeout(timer);
-          if (pollTimer) window.clearInterval(pollTimer);
-          channel.removeEventListener("bufferedamountlow", done);
-          channel.removeEventListener("close", closed);
-          channel.removeEventListener("error", closed);
-        };
         channel.addEventListener("bufferedamountlow", done, { once: true });
         channel.addEventListener("close", closed, { once: true });
         channel.addEventListener("error", closed, { once: true });
-        pollTimer = window.setInterval(checkCapacity, 250);
-        timer = window.setTimeout(() => {
+        const pollTimer = window.setInterval(checkCapacity, 250);
+        const timer = window.setTimeout(() => {
           if (channel.bufferedAmount <= HIGH_WATER) {
             done();
           } else {
