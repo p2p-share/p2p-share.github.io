@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import type { AccessMode } from "../types";
+import type { AccessMode, Presence } from "../types";
 import { Dialog } from "./Dialog";
 import { Icon } from "./Icons";
 
@@ -131,7 +131,13 @@ export function ShareDialog({
   busy,
   error,
   peerCount,
+  peers,
+  peerPolicies,
+  canManagePeers,
+  roomLocked,
   onCreateInvite,
+  onResetInvite,
+  onChangePeerAccess,
   onJoin,
 }: {
   open: boolean;
@@ -143,10 +149,31 @@ export function ShareDialog({
   busy: boolean;
   error: string;
   peerCount: number;
-  onCreateInvite: (access: AccessMode) => void;
+  peers: Presence[];
+  peerPolicies: Map<string, AccessMode>;
+  canManagePeers: boolean;
+  roomLocked: boolean;
+  onCreateInvite: (access: AccessMode, password?: string) => void;
+  onResetInvite: () => void;
+  onChangePeerAccess: (peerId: string, access: AccessMode) => void;
   onJoin: () => void;
 }) {
   const [access, setAccess] = useState<AccessMode>("edit");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const create = () => {
+    if (password && password.length < 8) {
+      setPasswordError("Use at least 8 characters for the room password.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setPasswordError("Password confirmation does not match.");
+      return;
+    }
+    setPasswordError("");
+    onCreateInvite(access, password || undefined);
+  };
 
   return (
     <Dialog
@@ -189,7 +216,7 @@ export function ShareDialog({
         <div className="dialog-body stack">
           <div className="invite-room-status">
             <span className="signal-card-icon"><Icon name="users" /></span>
-            <div><strong>{peerCount + 1} {peerCount ? "people connected" : "person in this room"}</strong><span>Anyone with your selected room link can join automatically.</span></div>
+            <div><strong>{peerCount} direct {peerCount === 1 ? "route" : "routes"} active</strong><span>Large rooms relay collaboration across a bounded peer overlay.</span></div>
           </div>
 
           {!inviteLink ? (
@@ -205,7 +232,17 @@ export function ShareDialog({
                   <Icon name="eye" /><span><strong>Read only</strong><small>View, preview, download and calls.</small></span>
                 </label>
               </fieldset>
-              <button className="primary-button invite-create-button" disabled={busy} onClick={() => onCreateInvite(access)}>
+              {!roomLocked ? (
+                <fieldset className="invite-password-fields">
+                  <legend>Protect this room <span>optional</span></legend>
+                  <label><span>Password</span><input type="password" autoComplete="new-password" value={password} onChange={(event) => { setPassword(event.target.value); setPasswordError(""); }} placeholder="At least 8 characters" /></label>
+                  <label><span>Confirm password</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); setPasswordError(""); }} placeholder="Repeat password" /></label>
+                  {passwordError && <p className="form-error" role="alert">{passwordError}</p>}
+                </fieldset>
+              ) : (
+                <div className="callout success"><Icon name="lock" /><div><strong>Password protected</strong><span>Share the password separately from the invite link.</span></div></div>
+              )}
+              <button className="primary-button invite-create-button" disabled={busy} onClick={create}>
                 <Icon name="plus" />
                 {busy ? "Preparing secure invite…" : `Create ${access === "read" ? "read-only" : "editable"} invite`}
               </button>
@@ -226,7 +263,23 @@ export function ShareDialog({
                 <Icon name="check" />
                 <div><strong>No response to paste</strong><span>Firebase exchanges temporary connection details; collaboration data still travels directly through WebRTC.</span></div>
               </div>
+              <button className="secondary-button invite-another-button" onClick={onResetInvite}><Icon name="plus" />Invite another peer</button>
             </>
+          )}
+
+          {canManagePeers && peers.length > 0 && (
+            <section className="peer-access-manager">
+              <div><strong>Connected peer access</strong><span>Changes apply immediately to each cooperative peer.</span></div>
+              {peers.map((peer) => (
+                <label key={peer.peerId}>
+                  <span><i style={{ background: peer.color }} />{peer.name}</span>
+                  <select value={peerPolicies.get(peer.peerId) || "edit"} onChange={(event) => onChangePeerAccess(peer.peerId, event.target.value as AccessMode)}>
+                    <option value="edit">Can edit</option>
+                    <option value="read">Read only</option>
+                  </select>
+                </label>
+              ))}
+            </section>
           )}
 
           <details className="recovery-details">

@@ -13,7 +13,8 @@ async function exercise(viewport, label) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  await page.goto("http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
+  const roomId = label === "desktop" ? "UiD001" : "UiM001";
+  await page.goto(`http://127.0.0.1:5173/#room=${roomId}`, { waitUntil: "domcontentloaded" });
   const onboarding = page.getByLabel("Your display name");
   await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
   if (await onboarding.isVisible()) {
@@ -135,9 +136,13 @@ async function verifyAutomaticSignaling() {
     await page.getByLabel("Collaborative code editor").waitFor();
   }));
   try {
-    await Promise.all(pages.map((page) => page.getByText("3 here", { exact: true }).waitFor({ timeout: 60_000 })));
+    await Promise.all(pages.map((page) =>
+      page.locator('[aria-label="2 direct peer routes"]').waitFor({ state: "attached", timeout: 60_000 }),
+    ));
   } catch {
-    const statuses = await Promise.all(pages.map((page) => page.locator(".connection-status").allTextContents()));
+    const statuses = await Promise.all(pages.map((page) =>
+      page.locator(".presence-stack").getAttribute("aria-label"),
+    ));
     throw new Error(`Automatic signaling did not connect. Statuses: ${JSON.stringify(statuses)}. Errors: ${errors.join(" | ")}`);
   }
   await Promise.all(contexts.map((context) => context.close()));
@@ -184,8 +189,8 @@ async function verifyPasswordRoom() {
   await guest.getByRole("button", { name: "Enter workspace" }).click();
   try {
     await Promise.all([
-      host.getByText("2 here", { exact: true }).waitFor({ timeout: 45_000 }),
-      guest.getByText("2 here", { exact: true }).waitFor({ timeout: 45_000 }),
+      host.locator('[aria-label="1 direct peer routes"]').waitFor({ state: "attached", timeout: 45_000 }),
+      guest.locator('[aria-label="1 direct peer routes"]').waitFor({ state: "attached", timeout: 45_000 }),
     ]);
   } catch {
     throw new Error(`Password peers did not connect: ${errors.join(" | ")}`);

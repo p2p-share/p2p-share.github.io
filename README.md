@@ -10,16 +10,19 @@
 
 A private, static, peer-to-peer code room hosted by GitHub Pages. It combines a CodeMirror editor, Yjs conflict-free collaboration, direct WebRTC data channels, Firebase-assisted peer discovery, optional password-derived AES-256-GCM encryption, arbitrary file transfer, and browser-local recovery.
 
+The root URL opens a responsive product landing page with six-character alphanumeric room creation, room-ID or invitation joining, an optional protected-room password field, recent local projects, the complete feature catalogue, privacy details, and direct room-link routing. Room and invitation hashes bypass the landing page and open the workspace immediately.
+
 ## What “serverless” means here
 
 p2p-share uses Firebase Authentication and Cloud Firestore only to discover peers and exchange temporary WebRTC session descriptions. Code, files, chat, editor state, and media are never written to Firebase; they travel directly between peers and can be recovered from browser-local storage. A public STUN server assists NAT discovery. No TURN relay is currently configured.
 
-Opening a compact room link with a 10-character cryptographically random room ID starts automatic multi-peer discovery:
+Opening a compact room link with a six-character alphanumeric room ID starts automatic multi-peer discovery. Existing longer room IDs remain compatible:
 
 1. The visitor receives an anonymous Firebase identity.
 2. The browser registers an ephemeral participant in the room.
-3. Peers exchange offers and answers through a short-lived Firestore mailbox.
-4. Consumed signals are deleted and collaboration continues over direct WebRTC.
+3. Four indexed ring-neighbor queries discover only a small, deterministic set of nearby peers instead of downloading the room's complete participant list.
+4. Peers exchange offers and answers through a short-lived Firestore mailbox.
+5. Consumed signals are deleted and collaboration continues over a bounded WebRTC overlay. Deduplicated Yjs, chat, review, and control events propagate across that overlay.
 
 Firebase is signaling infrastructure, so the application is no longer strictly infrastructure-free. STUN improves direct connectivity, but connections can still fail across restrictive or symmetric NATs until a TURN service is configured.
 
@@ -28,10 +31,11 @@ Consumed signaling documents and intentional participant departures are deleted 
 ## Features
 
 - Real-time multi-peer code and text editing with Yjs CRDT updates
+- Bounded WebRTC overlay designed for room occupancy up to 10,000 peers without creating a quadratic full mesh
 - First-visit display-name onboarding, connected-peer roster, and synchronized group chat
 - One invite per new peer, native device sharing when available, and repeatable multi-peer onboarding
 - Multi-peer WebRTC audio meetings and video conferences with mute, camera, and leave controls
-- Automatic in-room signaling expands the initial connection into a direct full mesh for conference media
+- Indexed ring-neighbor discovery keeps each browser to 16 or fewer direct peer routes
 - Collaborative code runner with local, time-limited JavaScript/TypeScript execution
 - Browser-side runtimes for JavaScript/TypeScript, Python, Ruby, PHP, Lua, R, SQL, C/C++, Node.js projects, and frontend playgrounds
 - Shared run status, standard output, errors, author, and timing for every peer
@@ -39,6 +43,7 @@ Consumed signaling documents and intentional participant departures are deleted 
 - Collaborative multi-file tabs with per-file language detection and syntax highlighting
 - Hierarchical project explorer with create, rename/move, duplicate, delete, folder upload, ZIP import/export, and a synchronized project manifest
 - Editable and read-only one-time invites with copy, native sharing, and locally generated QR codes
+- Optional password setup inside Invite People and owner controls for changing each connected peer between editable and read-only client access
 - Cross-tab duplicate detection, Yjs synchronization, single-tab persistence leadership, snippet handoff, recent-project refreshes, and app-update notices
 - CodeMirror folding, bracket matching, automatic indentation, multiple cursors, regex find/replace, optional minimap, command palette, Vim/Emacs bindings, tab width, and high-contrast theme
 - Worker-backed formatting and diagnostics: Prettier, SQL formatting, JSON validation, Markdown checks, TODO/FIXME extraction, dependencies, duplicates, indentation, whitespace, counts, and complexity estimates
@@ -72,6 +77,12 @@ Consumed signaling documents and intentional participant departures are deleted 
 
 ## Project workspace and limits
 
+### Large-room topology
+
+Rooms use a deterministic ring overlay rather than connecting every browser to every other browser. Each participant watches four bounded Firestore queries, selects up to eight nearby ring neighbors, and maintains no more than 16 direct WebRTC routes including temporary file-transfer routes. Globally collaborative messages carry unique IDs, cross those routes, and are deduplicated by every browser. Presence and initial state-vector responses remain neighbor-only to prevent periodic all-room fan-out, while file bytes always use an on-demand direct connection to a provider.
+
+This architecture is designed to let as many as 10,000 participants register in one room without the roughly 50 million connections a full mesh would require. It is not a claim that 10,000 concurrent clients have been load-tested in production: practical capacity still depends on Firebase quotas, browser and network reliability, event rate, geographic distribution, and NAT traversal. The interface shows locally connected routes and recently observed neighbors, not a costly global presence roster.
+
 The collaborative project stores up to 2,000 UTF-8 text files and 512 MiB total uncompressed project content. The primary streaming importer accepts a single text file up to 512 MiB; bulk folder and ZIP imports retain a 256 MiB per-file guard because those paths must also stage archive or folder data. These are guardrails rather than promises that every mobile device can hold the maximum: Yjs history, browser memory, ZIP decompression, and syntax parsers add overhead. Files with NUL bytes or a high control-character ratio are treated as binary, skipped from the collaborative editor, and reported as warnings. Binary assets can still use the separate direct file-transfer panel.
 
 ZIP exports contain every collaborative text file plus `p2p-share.project.json`. ZIP imports normalize paths, reject traversal components, enforce compressed and expanded limits, skip binary entries, detect languages by filename, and restore a valid project manifest when present.
@@ -101,15 +112,19 @@ Browsers do not provide a reliable, decentralized way for closed tabs to prove t
 
 Audio and video use WebRTC media tracks over the same direct peer connections as collaboration. Camera and microphone access begins only after the user chooses an audio or video call. No media recorder is included, and media is not written to IndexedDB.
 
+Read-only and editable modes are enforced by the official p2p-share client. Because this is a decentralized static application without a trusted authorization server, they are cooperative client permissions rather than protection against a deliberately modified client. Password encryption is the security boundary for confidential room content.
+
+During active calls and file transfers, p2p-share requests the Screen Wake Lock API where supported. Signaling listeners automatically rejoin after network recovery, BFCache restoration, or tab visibility restoration, and transient WebRTC disconnections receive a grace period before connections are rebuilt. Mobile operating systems can still suspend browser execution completely; a static PWA or service worker cannot guarantee a live WebRTC connection while the OS has suspended the page.
+
 Simple JavaScript and TypeScript execute in a disposable Web Worker with a five-second timeout and network APIs disabled. Python uses Pyodide, Ruby uses ruby.wasm, PHP uses PHP Wasm, Lua uses Fengari, R uses WebR, SQL uses an in-memory SQLite Wasm database, and C/C++ use Wasm Clang. Node.js projects with a `package.json` use WebContainers, while frontend projects use Sandpack. Runtime payloads are lazy-loaded on first use; C/C++, R, Ruby, and Python can have substantial first-run downloads. CheerpJ is identified for compiled Java `.class`/`.jar` artifacts, but Java source compilation is not currently provided.
 
 ## Calls, execution, and version logs
 
-- Open **Room call** to start an audio-only or video meeting. As participants join, p2p-share uses the existing encrypted data mesh to exchange additional WebRTC offers and creates direct media paths between every participant.
+- Open **Room call** to start an audio-only or video meeting. Calls are intentionally limited to the local small-group mesh (the current browser plus up to eight directly connected participants).
 - Open **Code runner** to execute the current document. The latest result is stored in the collaborative Yjs document so output appears for everyone.
 - Open **Version logs** to inspect line-level attribution. The panel stays hidden until requested. Clearing it is a shared room action.
 
-Full-mesh video is appropriate for small collaborative rooms because each browser sends one media stream to every other participant. Large conferences need an SFU media server, which would violate this project’s entirely static, zero-server runtime. Direct calls can also fail behind restrictive NATs because p2p-share deliberately uses no STUN or TURN service.
+Full-mesh video is appropriate only for small collaborative groups because each browser sends one media stream to every other participant. Large conferences need an SFU media server, which would violate this project’s entirely static, zero-storage-server runtime. Direct calls can also fail behind restrictive NATs because p2p-share uses STUN but deliberately has no TURN relay.
 
 ## Publishing and Git integration
 
@@ -129,9 +144,9 @@ On browsers that support installation, open **Settings → Install app**. On iOS
 
 ## File-size behavior
 
-The application accepts individual files up to exactly 1 GiB. The WebRTC sender reads one 48 KiB slice at a time and obeys data-channel backpressure. Chromium’s File System Access API can stream an incoming file directly to a user-selected destination. Other browsers use IndexedDB, where the effective maximum depends on available disk space, browser quota, private-browsing policy, and device memory.
+The application accepts individual files up to exactly 1 GiB. Newly shared files are retained only as device-backed browser `File` references for the lifetime of the tab; their bytes are not copied into memory or IndexedDB. On request, the sender reads the device stream in bounded 60 KiB chunks and applies per-peer data-channel backpressure. Chromium’s File System Access API streams an incoming file directly to a user-selected destination. Other browsers use IndexedDB as a disk-backed receive fallback, where the effective maximum depends on available disk space, browser quota, and private-browsing policy.
 
-Shared-file metadata is synchronized through the room document, while file bytes move only when a peer requests them. Files cached in IndexedDB advertise the receiving peer as an additional provider, so later requests can use any online provider. A download streamed directly to a user-selected filesystem destination is not advertised because the browser no longer controls or can re-open that file. Removing a locally owned file clears its IndexedDB copy as well as the shared room listing.
+Shared-file metadata is synchronized through the room document, while file bytes move only when a peer requests them. Each receiver gets an independent direct binary stream, allowing multiple peers to download concurrently without broadcasting payloads through the room mesh. Every stream uses a unique AES-256-GCM key, authenticated chunk ordering, SHA-256 chunk and transfer verification, and a final receiver acknowledgement. Files cached in IndexedDB advertise the receiving peer as an additional provider, so later requests can use any online provider. A download streamed directly to a user-selected filesystem destination is not advertised because the browser no longer controls or can re-open that file.
 
 The collaborative editor is intended for text documents. Large or binary content should be shared through the file panel rather than inserted into the editor.
 

@@ -10,6 +10,7 @@ import { FilesPanel } from "./components/FilesPanel";
 import { FilePreviewDialog } from "./components/FilePreviewDialog";
 import { Icon } from "./components/Icons";
 import { LanguagePicker } from "./components/LanguagePicker";
+import { LandingPage } from "./components/LandingPage";
 import { ShareDialog } from "./components/ShareDialog";
 import { RunnerPanel } from "./components/RunnerPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
@@ -20,7 +21,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import { analyzeCode, formatCode } from "./lib/analysis";
 import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
-import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
+import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putRoom } from "./lib/db";
 import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
 import { streamUtf8Blob, type StreamImportProgress } from "./lib/largeImport";
 import {
@@ -35,6 +36,16 @@ import {
   type ImportCandidate,
 } from "./lib/project";
 import { base64ToBytes, bytesToBase64 } from "./lib/encoding";
+import {
+  chunkDigest,
+  createTransferKey,
+  decryptTransferChunk,
+  encryptTransferChunk,
+  exportTransferKey,
+  importTransferKey,
+  streamBlobChunks,
+  transferDigest,
+} from "./lib/fileTransfer";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
 import { FirebaseSignaling, getFirebaseRoomSecurity, type FirebaseRoomSecurity } from "./lib/firebaseSignaling";
 import { emptyRunResult, runBrowserCode } from "./lib/runner";
@@ -60,6 +71,7 @@ type Session = {
   salt?: string;
   tabs: CrossTabCoordinator;
   signaling: FirebaseSignaling;
+  owner: boolean;
 };
 
 type BootState = {
@@ -69,6 +81,7 @@ type BootState = {
   inviteToken?: string;
   access?: AccessMode;
   firebaseSecurity?: FirebaseRoomSecurity;
+  owner?: boolean;
 };
 
 type IncomingSink = {
@@ -76,6 +89,11 @@ type IncomingSink = {
   transferId: string;
   writable?: any;
   chain: Promise<void>;
+  key?: CryptoKey;
+  chunkDigests: string[];
+  expectedIndex: number;
+  receivedBytes: number;
+  expectedChunks?: number;
 };
 
 type InstallPromptEvent = Event & {
@@ -83,23 +101,25 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
+type WakeLockSentinelLike = EventTarget & {
+  released: boolean;
+  release(): Promise<void>;
+};
+
 type WorkspacePanel = "project" | "files" | "workbench" | "runner" | "activity" | "review" | "chat" | "publish";
 
 const MAX_FILE_SIZE = 1024 ** 3;
 const MAX_EDITOR_FILE_SIZE = 512 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
-const FILE_CHUNK_SIZE = 48 * 1024;
+const FILE_CHUNK_SIZE = 60 * 1024;
 const STREAM_IMPORT_ORIGIN = "stream-import";
 const ROOM_PASSWORD_MARKER = "p2p-share-room-password-v1";
 const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
 
 function newRoomId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "")
-    .slice(0, 10);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  return [...bytes].map((value) => alphabet[value % alphabet.length]).join("");
 }
 
 function parseHash() {
@@ -161,6 +181,7 @@ export function App() {
   const [session, setSession] = useState<Session>();
   const [boot, setBoot] = useState<BootState>();
   const [ready, setReady] = useState(false);
+  const [landingOpen, setLandingOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState("");
@@ -244,6 +265,9 @@ export function App() {
   const [stats, setStats] = useState({ lines: 1, words: 0, characters: 0 });
   const [peerCount, setPeerCount] = useState(0);
   const [presences, setPresences] = useState<Presence[]>([]);
+  const [peerPolicies, setPeerPolicies] = useState<Map<string, AccessMode>>(new Map());
+  const [accessOverride, setAccessOverride] = useState<AccessMode>();
+  const ownerPeerId = useRef<string | undefined>(undefined);
   const [localFiles, setLocalFiles] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [previewFile, setPreviewFile] = useState<{ file: SharedFile; blob: Blob }>();
@@ -260,6 +284,10 @@ export function App() {
   const bootStarted = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const sinks = useRef(new Map<string, IncomingSink>());
+  // File objects are device-backed references. Their bytes are streamed on demand
+  // and are not copied into browser memory or IndexedDB when shared.
+  const fileSources = useRef(new Map<string, File>());
+  const wakeLock = useRef<WakeLockSentinelLike | undefined>(undefined);
   const importInput = useRef<HTMLInputElement>(null);
   const importCancelled = useRef(false);
   const importInProgress = useRef(false);
@@ -267,15 +295,20 @@ export function App() {
   const localColor = useMemo(() => palette[Math.floor(Math.random() * palette.length)], []);
   const activeText = session?.codeFiles.get(activeFileId) || session?.text;
   const activeMeta = session?.codeFileMeta.get(activeFileId);
-  const accessMode: AccessMode = boot?.invite?.access
+  const accessMode: AccessMode = accessOverride || boot?.invite?.access
     || boot?.access
     || (boot?.roomId ? sessionStorage.getItem(`p2p-share:access:${boot.roomId}`) as AccessMode : undefined)
     || "edit";
   const isReadOnly = accessMode === "read";
+  const accessModeRef = useRef(accessMode);
 
   useEffect(() => {
     localNameRef.current = localName;
   }, [localName]);
+
+  useEffect(() => {
+    accessModeRef.current = accessMode;
+  }, [accessMode]);
 
   useEffect(() => () => {
     localStream?.getTracks().forEach((track) => track.stop());
@@ -302,6 +335,42 @@ export function App() {
       window.removeEventListener("beforeinstallprompt", handleInstall);
     };
   }, []);
+
+  const keepBackgroundActive = Boolean(callMode) || transfers.some((transfer) => transfer.status === "running");
+  useEffect(() => {
+    if (!keepBackgroundActive || !("wakeLock" in navigator)) return;
+    let cancelled = false;
+    const acquire = async () => {
+      if (document.visibilityState !== "visible" || wakeLock.current) return;
+      try {
+        const sentinel = await (navigator as Navigator & {
+          wakeLock: { request(type: "screen"): Promise<WakeLockSentinelLike> };
+        }).wakeLock.request("screen");
+        if (cancelled) {
+          await sentinel.release();
+          return;
+        }
+        wakeLock.current = sentinel;
+        sentinel.addEventListener("release", () => {
+          if (wakeLock.current === sentinel) wakeLock.current = undefined;
+        });
+      } catch {
+        // Wake Lock is best effort and may be denied by battery or OS policy.
+      }
+    };
+    const restore = () => {
+      if (document.visibilityState === "visible") void acquire();
+    };
+    void acquire();
+    document.addEventListener("visibilitychange", restore);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", restore);
+      const current = wakeLock.current;
+      wakeLock.current = undefined;
+      void current?.release();
+    };
+  }, [keepBackgroundActive]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -340,8 +409,9 @@ export function App() {
           updatedAt: Date.now(),
         } satisfies ProjectManifest);
       }
-      if (bootState.invite?.access) {
-        sessionStorage.setItem(`p2p-share:access:${bootState.roomId}`, bootState.invite.access);
+      const grantedAccess = bootState.invite?.access || bootState.access;
+      if (grantedAccess) {
+        sessionStorage.setItem(`p2p-share:access:${bootState.roomId}`, grantedAccess);
       }
       if (!codeFiles.has("main")) {
         const main = new Y.Text();
@@ -377,6 +447,7 @@ export function App() {
       setSession({
         roomId: bootState.roomId, doc, text: mainText, meta, files, messages, logs, runner,
         codeFiles, codeFileMeta, reviews, description, mesh, key, locked, salt, tabs, signaling,
+        owner: Boolean(bootState.owner),
       });
       void signaling.connect().catch((error) => {
         mesh.reportError(
@@ -401,6 +472,11 @@ export function App() {
       try {
         const params = parseHash();
         const inviteToken = params.get("invite") || undefined;
+        if (!inviteToken && !params.get("room")) {
+          setLandingOpen(true);
+          setReady(true);
+          return;
+        }
         const invite = inviteToken ? await inspectInvite(inviteToken) : undefined;
         const roomId = invite?.roomId || params.get("room") || newRoomId();
         const record = await getRoom(roomId);
@@ -412,10 +488,34 @@ export function App() {
         }
         const requestedAccess = params.get("access");
         const access = requestedAccess === "read" ? "read" as const : requestedAccess === "edit" ? "edit" as const : undefined;
-        const state = { roomId, record, invite, inviteToken, access, firebaseSecurity };
+        const owner = firebaseSecurity?.isOwner === true
+          || sessionStorage.getItem(`p2p-share:created-room:${roomId}`) === "yes";
+        const state = { roomId, record, invite, inviteToken, access, firebaseSecurity, owner };
         setBoot(state);
         if (record?.locked || invite?.locked || firebaseSecurity?.locked) {
-          setUnlockOpen(true);
+          const pendingPassword = sessionStorage.getItem(`p2p-share:pending-password:${roomId}`);
+          if (pendingPassword) {
+            sessionStorage.removeItem(`p2p-share:pending-password:${roomId}`);
+            try {
+              const salt = record?.salt || invite?.salt || firebaseSecurity?.salt;
+              if (!salt) throw new Error("This protected room is missing its encryption salt.");
+              const key = await deriveRoomKey(pendingPassword, salt);
+              if (firebaseSecurity?.verificationPayload) {
+                const marker = await decryptBytes({
+                  payload: firebaseSecurity.verificationPayload,
+                  iv: firebaseSecurity.verificationIv,
+                }, key);
+                if (new TextDecoder().decode(marker) !== ROOM_PASSWORD_MARKER) throw new Error("Incorrect room password.");
+              }
+              await startSession(state, key);
+            } catch {
+              setUnlockPassword(pendingPassword);
+              setUnlockError("Incorrect room password.");
+              setUnlockOpen(true);
+            }
+          } else {
+            setUnlockOpen(true);
+          }
         } else {
           await startSession(state);
         }
@@ -540,21 +640,25 @@ export function App() {
 
   useEffect(() => {
     if (!session) return;
-    const sendPresence = () =>
-      void session.mesh.send({
+    const presencePayload = () => ({
         type: "presence",
         peerId: session.mesh.peerId,
         name: localNameRef.current,
         color: localColor,
+        access: accessModeRef.current,
+        owner: session.owner,
         seenAt: Date.now(),
       });
+    const sendPresence = () => void session.mesh.sendToConnected(presencePayload());
     const offPeers = session.mesh.on("peers", (event) => {
       setPeerCount(event.detail);
       if (event.detail > 0) {
-        void session.mesh.send({
-          type: "sync-request",
-          vector: bytesToBase64(Y.encodeStateVector(session.doc)),
-        });
+        void Promise.all(session.mesh.connectedPeerIds.map((peerId) =>
+          session.mesh.sendTo(peerId, {
+            type: "sync-request",
+            vector: bytesToBase64(Y.encodeStateVector(session.doc)),
+          }),
+        ));
         sendPresence();
       }
     });
@@ -569,16 +673,18 @@ export function App() {
           return;
         }
         if (body.type === "sync-request") {
+          if (!session.mesh.isPeerConnected(origin)) return;
           const vector = base64ToBytes(String(body.vector));
-          await session.mesh.send({
+          await session.mesh.sendTo(origin, {
             type: "sync-response",
             update: bytesToBase64(Y.encodeStateAsUpdate(session.doc, vector)),
           });
           return;
         }
         if (body.type === "hello") {
-          sendPresence();
-          await session.mesh.send({
+          if (!session.mesh.isPeerConnected(origin)) return;
+          await session.mesh.sendTo(origin, presencePayload());
+          await session.mesh.sendTo(origin, {
             type: "sync-request",
             vector: bytesToBase64(Y.encodeStateVector(session.doc)),
           });
@@ -595,9 +701,17 @@ export function App() {
             ...current.filter((item) => item.peerId !== next.peerId),
             next,
           ]);
-          if (session.mesh.peerId < next.peerId && !session.mesh.hasPeer(next.peerId)) {
-            await session.mesh.createPeerOffer(next.peerId);
-          }
+          const announcedAccess = body.access === "read" ? "read" : "edit";
+          setPeerPolicies((current) => new Map(current).set(next.peerId, announcedAccess));
+          if (body.owner === true) ownerPeerId.current = next.peerId;
+          return;
+        }
+        if (body.type === "access-change" && body.target === session.mesh.peerId) {
+          if (ownerPeerId.current && origin !== ownerPeerId.current) return;
+          const nextAccess: AccessMode = body.access === "read" ? "read" : "edit";
+          setAccessOverride(nextAccess);
+          sessionStorage.setItem(`p2p-share:access:${session.roomId}`, nextAccess);
+          showToast(nextAccess === "read" ? "The room owner changed your access to read only." : "The room owner granted edit access.");
           return;
         }
         if (body.type === "peer-offer" && body.target === session.mesh.peerId) {
@@ -637,7 +751,120 @@ export function App() {
             String(body.transferId),
             origin,
             setTransfers,
+            fileSources.current.get(String(body.fileId)),
           );
+          return;
+        }
+        if (body.type === "file-start" && body.target === session.mesh.peerId) {
+          const transferId = String(body.transferId);
+          const sink = sinks.current.get(transferId);
+          if (!sink) return;
+          sink.key = await importTransferKey(String(body.key));
+          sink.expectedChunks = Number(body.totalChunks);
+          updateTransfer(setTransfers, transferId, { phase: "transferring" });
+          return;
+        }
+        if (body.type === "file-chunk-v2" && body.target === session.mesh.peerId) {
+          const transferId = String(body.transferId);
+          const sink = sinks.current.get(transferId);
+          if (!sink) return;
+          const encrypted = body.data;
+          if (!(encrypted instanceof Uint8Array)) throw new Error("Received an invalid binary file chunk.");
+          const index = Number(body.index);
+          const chunkHash = String(body.hash);
+          sink.chain = sink.chain.then(async () => {
+            if (!sink.key) throw new Error("The encrypted transfer key was not received.");
+            if (index !== sink.expectedIndex) {
+              throw new Error(`File chunk sequence mismatch: expected ${sink.expectedIndex + 1}, received ${index + 1}.`);
+            }
+            const bytes = await decryptTransferChunk(
+              encrypted,
+              String(body.iv),
+              sink.key,
+              transferId,
+              index,
+            );
+            if (await chunkDigest(bytes) !== chunkHash) {
+              throw new Error(`File chunk ${index + 1} failed its SHA-256 integrity check.`);
+            }
+            if (sink.receivedBytes + bytes.length > sink.file.size) {
+              throw new Error("The incoming file exceeded its advertised size.");
+            }
+            if (sink.writable) await sink.writable.write(bytes);
+            else await putChunk(session.roomId, transferId, index, bytes);
+            sink.chunkDigests.push(chunkHash);
+            sink.expectedIndex += 1;
+            sink.receivedBytes += bytes.length;
+            const elapsed = Math.max(0.25, (Date.now() - Number(body.startedAt)) / 1000);
+            updateTransfer(setTransfers, transferId, {
+              transferred: sink.receivedBytes,
+              bytesPerSecond: sink.receivedBytes / elapsed,
+              phase: "transferring",
+            });
+          }).catch(async (error) => {
+            const message = error instanceof Error ? error.message : "Encrypted file transfer failed.";
+            updateTransfer(setTransfers, transferId, { status: "failed", error: message });
+            sinks.current.delete(transferId);
+            if (sink.writable?.abort) await sink.writable.abort().catch(() => undefined);
+            await session.mesh.sendTo(origin, { type: "file-error", target: origin, transferId, message }).catch(() => undefined);
+          });
+          return;
+        }
+        if (body.type === "file-end-v2" && body.target === session.mesh.peerId) {
+          const transferId = String(body.transferId);
+          const sink = sinks.current.get(transferId);
+          if (!sink) return;
+          sink.chain = sink.chain.then(async () => {
+            updateTransfer(setTransfers, transferId, { phase: "verifying" });
+            if (sink.receivedBytes !== sink.file.size) {
+              throw new Error(`File size mismatch: received ${sink.receivedBytes} of ${sink.file.size} bytes.`);
+            }
+            if (sink.expectedChunks !== undefined && sink.expectedIndex !== sink.expectedChunks) {
+              throw new Error(`File is incomplete: received ${sink.expectedIndex} of ${sink.expectedChunks} chunks.`);
+            }
+            if (await transferDigest(sink.chunkDigests) !== String(body.digest)) {
+              throw new Error("The completed file failed its SHA-256 transfer integrity check.");
+            }
+            if (sink.writable) {
+              await sink.writable.close();
+            } else {
+              await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
+              setLocalFiles((current) => new Set(current).add(sink.file.id));
+              const currentMeta = session.files.get(sink.file.id);
+              if (currentMeta) {
+                session.files.set(sink.file.id, {
+                  ...currentMeta,
+                  providers: [...new Set([...(currentMeta.providers || [currentMeta.owner]), session.mesh.peerId])],
+                });
+              }
+            }
+            updateTransfer(setTransfers, transferId, {
+              status: "done",
+              transferred: sink.file.size,
+              phase: "verifying",
+            });
+            sinks.current.delete(transferId);
+            await session.mesh.sendTo(origin, {
+              type: "file-received",
+              target: origin,
+              transferId,
+              digest: body.digest,
+            });
+            showToast(`${sink.file.name} received and verified`);
+          }).catch(async (error) => {
+            const message = error instanceof Error ? error.message : "File verification failed.";
+            updateTransfer(setTransfers, transferId, { status: "failed", error: message });
+            sinks.current.delete(transferId);
+            if (sink.writable?.abort) await sink.writable.abort().catch(() => undefined);
+            await session.mesh.sendTo(origin, { type: "file-error", target: origin, transferId, message }).catch(() => undefined);
+          });
+          return;
+        }
+        if (body.type === "file-received" && body.target === session.mesh.peerId) {
+          updateTransfer(setTransfers, String(body.transferId), {
+            status: "done",
+            phase: "verifying",
+          });
           return;
         }
         if (body.type === "file-chunk" && body.target === session.mesh.peerId) {
@@ -687,6 +914,8 @@ export function App() {
         }
         if (body.type === "file-error" && body.target === session.mesh.peerId) {
           const transferId = String(body.transferId);
+          const sink = sinks.current.get(transferId);
+          if (sink?.writable?.abort) await sink.writable.abort().catch(() => undefined);
           updateTransfer(setTransfers, transferId, {
             status: "failed",
             error: String(body.message),
@@ -702,6 +931,13 @@ export function App() {
     const offMedia = session.mesh.on("media", (event) => {
       setRemoteStreams((current) => new Map(current).set(event.detail.peerId, event.detail.stream));
     });
+    const offReconnect = session.mesh.on("reconnect", () => {
+      void session.signaling.reconnect().then(() => {
+        showToast("Reconnected to the room");
+      }).catch((error) => {
+        showToast(error instanceof Error ? error.message : "Room reconnection failed.");
+      });
+    });
     const heartbeat = window.setInterval(() => {
       sendPresence();
       setPresences((current) => current.filter((item) => Date.now() - item.lastSeen < 45_000));
@@ -711,6 +947,7 @@ export function App() {
       offError();
       offMessage();
       offMedia();
+      offReconnect();
       window.clearInterval(heartbeat);
       session.mesh.disconnect();
     };
@@ -748,11 +985,22 @@ export function App() {
     }
   };
 
-  const createInvite = async (access: AccessMode) => {
+  const createInvite = async (access: AccessMode, invitePassword?: string) => {
     if (!session) return;
     setShareBusy(true);
     setShareError("");
     try {
+      if (invitePassword && !session.locked) {
+        const salt = createSalt();
+        const key = await deriveRoomKey(invitePassword, salt);
+        const verification = await encryptBytes(new TextEncoder().encode(ROOM_PASSWORD_MARKER), key);
+        await session.signaling.setRoomSecurity(true, salt, verification);
+        session.mesh.setKey(key);
+        const protectedSession = { ...session, key, locked: true, salt };
+        setSession(protectedSession);
+        await persist(protectedSession);
+        await session.signaling.reconnect();
+      }
       setInviteLink(roomUrl(session.roomId, access));
     } catch (error) {
       setShareError(error instanceof Error ? error.message : "Could not create an invite.");
@@ -794,8 +1042,8 @@ export function App() {
       setSecurityError(error instanceof Error ? error.message : "Only the room creator can protect this room.");
       return;
     }
-    session.mesh.disconnect();
     session.mesh.setKey(key);
+    void session.signaling.reconnect();
     const next = { ...session, key, locked: true, salt };
     setSession(next);
     setPassword("");
@@ -813,8 +1061,8 @@ export function App() {
       setSecurityError(error instanceof Error ? error.message : "Only the room creator can remove room protection.");
       return;
     }
-    session.mesh.disconnect();
     session.mesh.setKey(undefined);
+    void session.signaling.reconnect();
     const next = { ...session, key: undefined, locked: false, salt: undefined };
     setSession(next);
     setSecurityOpen(false);
@@ -856,7 +1104,7 @@ export function App() {
         startedAt: Date.now(),
       }]);
       try {
-        await putFile(session.roomId, id, file);
+        fileSources.current.set(id, file);
         session.files.set(id, {
           id,
           name: file.name,
@@ -1280,11 +1528,13 @@ export function App() {
     localStorage.setItem("sharecode:minimap", minimap ? "on" : "off");
     setLocalName(nextName);
     setNameDraft(nextName);
-    void session?.mesh.send({
+    void session?.mesh.sendToConnected({
       type: "presence",
       peerId: session.mesh.peerId,
       name: nextName,
       color: localColor,
+      access: accessModeRef.current,
+      owner: session.owner,
       seenAt: Date.now(),
     });
     setSecurityOpen(false);
@@ -1303,11 +1553,13 @@ export function App() {
     setNameDraft(nextName);
     setOnboardingError("");
     setOnboardingOpen(false);
-    void session?.mesh.send({
+    void session?.mesh.sendToConnected({
       type: "presence",
       peerId: session.mesh.peerId,
       name: nextName,
       color: localColor,
+      access: accessModeRef.current,
+      owner: session.owner,
       seenAt: Date.now(),
     });
     if (boot?.inviteToken) setShareOpen(true);
@@ -1356,6 +1608,10 @@ export function App() {
 
   const startCall = async (mode: "audio" | "video") => {
     if (!session) return;
+    if (session.mesh.peerCount > 8) {
+      showToast("Calls support up to 9 directly connected participants. Collaboration remains available to the full room.");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
@@ -1395,7 +1651,7 @@ export function App() {
 
   const downloadFile = async (file: SharedFile) => {
     if (!session) return;
-    const local = await getFile(session.roomId, file.id);
+    const local = fileSources.current.get(file.id) || await getFile(session.roomId, file.id);
     if (local) {
       const url = URL.createObjectURL(local);
       const anchor = document.createElement("a");
@@ -1405,12 +1661,24 @@ export function App() {
       window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
       return;
     }
-    const connectedIds = new Set(presences.map((presence) => presence.peerId));
-    const provider = (file.providers?.length ? file.providers : [file.owner])
-      .find((peerId) => connectedIds.has(peerId));
+    const providers = file.providers?.length ? file.providers : [file.owner];
+    const provider = providers.find((peerId) => session.mesh.isPeerConnected(peerId))
+      || providers.find((peerId) => peerId !== session.mesh.peerId);
     if (!provider) {
       showToast("No peer with this file is online. Try again when a provider reconnects.");
       return;
+    }
+    if (!session.mesh.isPeerConnected(provider)) {
+      try {
+        await session.mesh.createPeerOffer(provider);
+        if (!await session.mesh.waitForPeer(provider, 20_000)) {
+          showToast("The file provider could not establish a direct route. Try another provider.");
+          return;
+        }
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "Could not open a direct route to the file provider.");
+        return;
+      }
     }
     const transferId = crypto.randomUUID();
     let writable: any;
@@ -1422,7 +1690,15 @@ export function App() {
         if ((error as DOMException).name === "AbortError") return;
       }
     }
-    sinks.current.set(transferId, { file, transferId, writable, chain: Promise.resolve() });
+    sinks.current.set(transferId, {
+      file,
+      transferId,
+      writable,
+      chain: Promise.resolve(),
+      chunkDigests: [],
+      expectedIndex: 0,
+      receivedBytes: 0,
+    });
     setTransfers((current) => [
       ...current,
       {
@@ -1434,9 +1710,11 @@ export function App() {
         total: file.size,
         status: "running",
         startedAt: Date.now(),
+        phase: "negotiating",
+        peerId: provider,
       },
     ]);
-    await session.mesh.send({
+    await session.mesh.sendTo(provider, {
       type: "file-request",
       target: provider,
       fileId: file.id,
@@ -1444,16 +1722,16 @@ export function App() {
     });
     window.setTimeout(() => {
       setTransfers((current) => current.map((transfer) => {
-        if (transfer.id !== transferId || transfer.status !== "running" || transfer.transferred > 0) return transfer;
+        if (transfer.id !== transferId || transfer.status !== "running" || transfer.phase !== "negotiating") return transfer;
         sinks.current.delete(transferId);
-        return { ...transfer, status: "failed", error: "The provider did not start the transfer. Try another online peer." };
+        return { ...transfer, status: "failed", error: "The provider did not acknowledge the direct transfer. Try another connected provider." };
       }));
-    }, 30_000);
+    }, 45_000);
   };
 
   const previewSharedFile = async (file: SharedFile) => {
     if (!session) return;
-    const blob = await getFile(session.roomId, file.id);
+    const blob = fileSources.current.get(file.id) || await getFile(session.roomId, file.id);
     if (!blob) {
       showToast("Download this file before previewing it.");
       return;
@@ -1519,6 +1797,49 @@ export function App() {
     { id: "share", label: "Invite a peer", detail: "Create editable or read-only invite links and QR codes", run: () => setShareOpen(true) },
     { id: "settings", label: "Editor settings", detail: "Theme, font, tab width, minimap and keybindings", run: () => setSecurityOpen(true) },
   ], [activeMeta, activeText, isReadOnly, session, tabSize]);
+
+  const navigateToRoom = (value: string, password?: string) => {
+    const input = value.trim();
+    if (!input) return "Enter a room ID or invite link.";
+    let nextHash: string;
+    try {
+      if (/^https?:\/\//i.test(input)) {
+        const url = new URL(input);
+        if (!url.hash || (!url.hash.includes("room=") && !url.hash.includes("invite="))) {
+          return "This link does not contain a p2p-share room or invitation.";
+        }
+        nextHash = url.hash;
+      } else if (input.startsWith("#")) {
+        nextHash = input;
+      } else {
+        const roomId = input.replace(/^room=/, "");
+        if (!/^[A-Za-z0-9_-]{6,64}$/.test(roomId)) return "Enter a 6-character room ID or p2p-share invitation link.";
+        nextHash = `#room=${encodeURIComponent(roomId)}`;
+      }
+      const roomId = new URLSearchParams(nextHash.replace(/^#/, "")).get("room");
+      if (password && roomId) sessionStorage.setItem(`p2p-share:pending-password:${roomId}`, password);
+      location.hash = nextHash.replace(/^#/, "");
+      location.reload();
+      return;
+    } catch {
+      return "Enter a valid room ID or p2p-share invitation link.";
+    }
+  };
+
+  if (landingOpen) {
+    return (
+      <LandingPage
+        onCreate={() => {
+          const roomId = newRoomId();
+          sessionStorage.setItem(`p2p-share:created-room:${roomId}`, "yes");
+          setLandingOpen(false);
+          location.hash = `room=${roomId}`;
+          location.reload();
+        }}
+        onOpen={navigateToRoom}
+      />
+    );
+  }
 
   if (!ready || !session) {
     return (
@@ -1594,7 +1915,7 @@ export function App() {
           />
         </div>
         <div className="topbar-actions">
-          <div className="presence-stack" aria-label={`${peerCount} connected peers`}>
+          <div className="presence-stack" aria-label={`${peerCount} direct peer routes`}>
             {allPresence.slice(0, 4).map((presence) => (
               <span
                 key={presence.peerId}
@@ -1608,7 +1929,7 @@ export function App() {
           </div>
           <button className="status-pill" onClick={() => setShareOpen(true)}>
             <span className={`status-dot ${peerCount ? "online" : ""}`} />
-            {peerCount ? `${peerCount + 1} here` : "Only you"}
+            {peerCount ? `${peerCount} ${peerCount === 1 ? "route" : "routes"}` : "Connecting"}
           </button>
           <div className="desktop-tools">
             <button className="icon-button top-icon" onClick={() => setFilesOpen((value) => !value)} aria-label="Open direct file sharing" aria-pressed={filesOpen} title="Share files">
@@ -1762,6 +2083,7 @@ export function App() {
           onRemove={(file) => {
             if (isReadOnly) return;
             session.files.delete(file.id);
+            fileSources.current.delete(file.id);
             setLocalFiles((current) => {
               const next = new Set(current);
               next.delete(file.id);
@@ -2046,7 +2368,23 @@ export function App() {
         busy={shareBusy}
         error={shareError}
         peerCount={peerCount}
-        onCreateInvite={(access) => void createInvite(access)}
+        peers={presences}
+        peerPolicies={peerPolicies}
+        canManagePeers={session.owner}
+        roomLocked={session.locked}
+        onCreateInvite={(access, invitePassword) => void createInvite(access, invitePassword)}
+        onResetInvite={() => {
+          setInviteLink("");
+          setShareError("");
+        }}
+        onChangePeerAccess={(peerId, nextAccess) => {
+          setPeerPolicies((current) => new Map(current).set(peerId, nextAccess));
+          void session.mesh.sendTo(peerId, {
+            type: "access-change",
+            target: peerId,
+            access: nextAccess,
+          }).catch((error) => showToast(error instanceof Error ? error.message : "Could not update peer access."));
+        }}
         onJoin={() => void joinInvite()}
       />
 
@@ -2280,8 +2618,9 @@ async function sendFile(
   transferId: string,
   target: string,
   setTransfers: React.Dispatch<React.SetStateAction<Transfer[]>>,
+  source?: Blob,
 ) {
-  const file = await getFile(session.roomId, fileId);
+  const file = source || await getFile(session.roomId, fileId);
   const meta = session.files.get(fileId);
   if (!file || !meta) {
     await session.mesh.send({ type: "file-error", target, transferId, message: "File is not available." });
@@ -2298,27 +2637,74 @@ async function sendFile(
       total: file.size,
       status: "running",
       startedAt: Date.now(),
+      phase: "negotiating",
+      peerId: target,
     },
   ]);
   try {
-    for (let offset = 0, index = 0; offset < file.size; offset += FILE_CHUNK_SIZE, index += 1) {
-      const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer());
-      await session.mesh.send({
-        type: "file-chunk",
+    const startedAt = Date.now();
+    const transferKey = await createTransferKey();
+    const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
+    await session.mesh.sendTo(target, {
+      type: "file-start",
+      target,
+      transferId,
+      protocol: 2,
+      key: await exportTransferKey(transferKey),
+      chunkSize: FILE_CHUNK_SIZE,
+      totalChunks,
+    });
+    const chunkDigests: string[] = [];
+    let offset = 0;
+    let index = 0;
+    for await (const bytes of streamBlobChunks(file, FILE_CHUNK_SIZE)) {
+      const [hash, encrypted] = await Promise.all([
+        chunkDigest(bytes),
+        encryptTransferChunk(bytes, transferKey, transferId, index),
+      ]);
+      chunkDigests.push(hash);
+      await session.mesh.sendBinaryTo(target, {
+        type: "file-chunk-v2",
         target,
         transferId,
         index,
         offset,
-        data: bytesToBase64(bytes),
+        iv: encrypted.iv,
+        hash,
+        startedAt,
+      }, encrypted.payload);
+      const transferred = offset + bytes.length;
+      const elapsed = Math.max(0.25, (Date.now() - startedAt) / 1000);
+      updateTransfer(setTransfers, transferId, {
+        transferred,
+        bytesPerSecond: transferred / elapsed,
+        phase: "transferring",
       });
-      updateTransfer(setTransfers, transferId, { transferred: offset + bytes.length });
+      offset += bytes.length;
+      index += 1;
     }
-    await session.mesh.send({ type: "file-end", target, transferId });
-    updateTransfer(setTransfers, transferId, { status: "done", transferred: file.size });
+    await session.mesh.sendTo(target, {
+      type: "file-end-v2",
+      target,
+      transferId,
+      totalChunks,
+      digest: await transferDigest(chunkDigests),
+    });
+    updateTransfer(setTransfers, transferId, {
+      transferred: file.size,
+      phase: "verifying",
+    });
+    window.setTimeout(() => {
+      setTransfers((current) => current.map((transfer) => (
+        transfer.id === transferId && transfer.status === "running"
+          ? { ...transfer, status: "failed", error: "The receiver did not acknowledge the verified file." }
+          : transfer
+      )));
+    }, 45_000);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The file transfer failed.";
     updateTransfer(setTransfers, transferId, { status: "failed", error: message });
-    await session.mesh.send({ type: "file-error", target, transferId, message }).catch(() => undefined);
+    await session.mesh.sendTo(target, { type: "file-error", target, transferId, message }).catch(() => undefined);
     throw error;
   }
 }

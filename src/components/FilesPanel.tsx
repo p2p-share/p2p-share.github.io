@@ -19,6 +19,16 @@ function fileKind(file: SharedFile) {
   return "File";
 }
 
+function transferDetail(transfer: Transfer) {
+  if (transfer.phase === "negotiating") return "Securing direct stream…";
+  if (transfer.phase === "verifying") return "Verifying integrity…";
+  if (!transfer.bytesPerSecond) return "";
+  const remaining = Math.max(0, transfer.total - transfer.transferred);
+  const seconds = remaining / transfer.bytesPerSecond;
+  const eta = seconds < 60 ? `${Math.ceil(seconds)}s left` : `${Math.ceil(seconds / 60)}m left`;
+  return `${formatBytes(transfer.bytesPerSecond)}/s · ${eta}`;
+}
+
 export function FilesPanel({
   open,
   files,
@@ -146,7 +156,7 @@ export function FilesPanel({
               </span>
               {transfer && (
                 <div className={`file-transfer-inline ${transfer.status}`}>
-                  <span>{transfer.status === "running" ? `${transfer.direction === "send" ? "Sending" : "Receiving"} ${Math.round(percent)}%` : transfer.status === "done" ? "Transfer complete" : transfer.error || "Transfer failed"}</span>
+                  <span>{transfer.status === "running" ? `${transfer.direction === "send" ? "Sending" : "Receiving"} ${Math.round(percent)}%${transferDetail(transfer) ? ` · ${transferDetail(transfer)}` : ""}` : transfer.status === "done" ? "Transfer complete · encrypted and verified" : transfer.error || "Transfer failed"}</span>
                   {transfer.status === "running" && <strong>{formatBytes(transfer.transferred)} / {formatBytes(transfer.total)}</strong>}
                   <div><i style={{ width: `${transfer.status === "done" ? 100 : percent}%` }} /></div>
                 </div>
@@ -158,12 +168,12 @@ export function FilesPanel({
 
       {(activeTransfers.length > 0 || recentTransfers.length > 0) && (
         <div className="transfer-tray">
-          <div><strong>{activeTransfers.length ? `${activeTransfers.length} active transfer${activeTransfers.length === 1 ? "" : "s"}` : "Recent transfers"}</strong>{!activeTransfers.length && <button onClick={onClearTransfers}>Clear</button>}</div>
-          {activeTransfers.map((transfer) => <span key={transfer.id}><Icon name={transfer.direction === "send" ? "upload" : "download"} />{transfer.name}<b>{Math.round(transfer.transferred / transfer.total * 100)}%</b></span>)}
+          <div><strong>{activeTransfers.length ? `${activeTransfers.length} simultaneous direct stream${activeTransfers.length === 1 ? "" : "s"}` : "Recent transfers"}</strong>{!activeTransfers.length && <button onClick={onClearTransfers}>Clear</button>}</div>
+          {activeTransfers.map((transfer) => <span key={transfer.id}><Icon name={transfer.direction === "send" ? "upload" : "download"} />{transfer.name}<b>{transfer.phase === "verifying" ? "verifying" : `${Math.round(transfer.transferred / transfer.total * 100)}%`}</b></span>)}
           {!activeTransfers.length && recentTransfers.slice(0, 2).map((transfer) => <span className={transfer.status} key={transfer.id}><Icon name={transfer.status === "done" ? "check" : "refresh"} />{transfer.name}<b>{transfer.status}</b></span>)}
         </div>
       )}
-      <div className="quota-note"><Icon name="shield" />Encrypted in transit. Files stay in browser storage and available peers.</div>
+      <div className="quota-note"><Icon name="shield" />Direct binary stream · AES-256-GCM encrypted · SHA-256 verified · no server upload.</div>
     </aside>
   );
 }

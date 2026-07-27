@@ -12,6 +12,7 @@ type NetworkEnvelope = {
   id: string;
   origin: string;
   body: Record<string, unknown>;
+  direct?: boolean;
 };
 
 type Fragment = {
@@ -35,15 +36,25 @@ type PendingMessage = {
   received: number;
 };
 
+type BinaryHeader = {
+  id: string;
+  origin: string;
+  body: Record<string, unknown>;
+  direct: true;
+};
+
 type MeshEvents = {
   message: CustomEvent<NetworkEnvelope>;
   peers: CustomEvent<number>;
   error: CustomEvent<string>;
   media: CustomEvent<{ peerId: string; stream: MediaStream }>;
+  reconnect: CustomEvent<void>;
 };
 
 const MAX_FRAGMENT = 24 * 1024;
 const HIGH_WATER = 2 * 1024 * 1024;
+const BINARY_MAGIC = new Uint8Array([0x50, 0x32, 0x50, 0x46]);
+export const MAX_DIRECT_PEERS = 16;
 
 export class PeerMesh extends EventTarget {
   readonly peerId = crypto.randomUUID();
@@ -70,9 +81,31 @@ export class PeerMesh extends EventTarget {
     return [...this.links.values()].filter((link) => link.channel?.readyState === "open").length;
   }
 
+  get connectedPeerIds() {
+    return [...new Set(
+      [...this.links.values()]
+        .filter((link) => link.channel?.readyState === "open" && link.remotePeerId)
+        .map((link) => link.remotePeerId!),
+    )];
+  }
+
+  private get routeCount() {
+    return new Set(
+      [...this.links.values(), ...this.offers.values()]
+        .filter((link) => link.pc.connectionState !== "closed")
+        .map((link) => link.pc),
+    ).size;
+  }
+
   hasPeer(peerId: string) {
     return [...this.links.values(), ...this.offers.values()].some(
       (link) => link.remotePeerId === peerId && link.pc.connectionState !== "closed",
+    );
+  }
+
+  isPeerConnected(peerId: string) {
+    return [...this.links.values()].some(
+      (link) => link.remotePeerId === peerId && link.channel?.readyState === "open",
     );
   }
 
@@ -106,7 +139,7 @@ export class PeerMesh extends EventTarget {
       emit();
     };
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      if (["failed", "closed"].includes(pc.connectionState)) {
         this.links.delete(id);
         this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
         if (pc.connectionState === "failed") {
@@ -116,7 +149,17 @@ export class PeerMesh extends EventTarget {
                 "Direct connection failed. The peers may be behind restrictive NAT or firewall rules.",
             }),
           );
+          this.dispatchEvent(new CustomEvent("reconnect"));
         }
+      }
+      if (pc.connectionState === "disconnected") {
+        window.setTimeout(() => {
+          if (pc.connectionState !== "disconnected") return;
+          pc.close();
+          this.links.delete(id);
+          this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
+          this.dispatchEvent(new CustomEvent("reconnect"));
+        }, 10_000);
       }
     };
     pc.ondatachannel = (event) => this.attachChannel(link, event.channel);
@@ -129,10 +172,18 @@ export class PeerMesh extends EventTarget {
     channel.bufferedAmountLowThreshold = 512 * 1024;
     channel.onopen = () => {
       this.links.set(link.id, link);
-      void this.send({ type: "hello", peerId: this.peerId });
+      void this.sendEnvelopeOnLink(link, {
+        id: crypto.randomUUID(),
+        origin: this.peerId,
+        body: { type: "hello", peerId: this.peerId },
+        direct: true,
+      });
       this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
     };
-    channel.onmessage = (event) => void this.receiveFragment(link, String(event.data));
+    channel.onmessage = (event) => {
+      if (typeof event.data === "string") void this.receiveFragment(link, event.data);
+      else void this.receiveBinary(link, event.data as ArrayBuffer | Blob);
+    };
     channel.onerror = () =>
       this.dispatchEvent(new CustomEvent("error", { detail: "A peer connection encountered an error." }));
   }
@@ -160,6 +211,9 @@ export class PeerMesh extends EventTarget {
 
   async createPeerOffer(target: string) {
     if (target === this.peerId || this.hasPeer(target)) return;
+    if (this.routeCount >= MAX_DIRECT_PEERS) {
+      throw new Error("This browser has reached its direct peer-route limit.");
+    }
     const offerId = crypto.randomUUID();
     const link = this.createConnection(offerId);
     link.remotePeerId = target;
@@ -179,6 +233,7 @@ export class PeerMesh extends EventTarget {
 
   async createSignalingOffer(target: string) {
     if (target === this.peerId || this.hasPeer(target)) return;
+    if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const offerId = crypto.randomUUID();
     const link = this.createConnection(offerId);
     link.remotePeerId = target;
@@ -200,6 +255,7 @@ export class PeerMesh extends EventTarget {
     description: RTCSessionDescriptionInit,
   ) {
     if (this.hasPeer(inviter)) return;
+    if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const link = this.createConnection(offerId);
     link.remotePeerId = inviter;
     await link.pc.setRemoteDescription(description);
@@ -232,6 +288,7 @@ export class PeerMesh extends EventTarget {
     description: RTCSessionDescriptionInit,
   ) {
     if (this.hasPeer(inviter)) return;
+    if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const link = this.createConnection(offerId);
     link.remotePeerId = inviter;
     await link.pc.setRemoteDescription(description);
@@ -310,10 +367,87 @@ export class PeerMesh extends EventTarget {
       id: crypto.randomUUID(),
       origin: this.peerId,
       body,
+      direct: false,
     };
     this.seen.add(envelope.id);
     this.pruneSeen();
     await this.broadcastEnvelope(envelope);
+  }
+
+  async sendTo(peerId: string, body: Record<string, unknown>): Promise<void> {
+    const link = [...this.links.values()].find(
+      (candidate) => candidate.remotePeerId === peerId && candidate.channel?.readyState === "open",
+    );
+    if (!link?.channel) throw new Error("The selected peer is no longer directly connected.");
+    const envelope: NetworkEnvelope = {
+      id: crypto.randomUUID(),
+      origin: this.peerId,
+      body,
+      direct: true,
+    };
+    await this.sendEnvelopeOnLink(link, envelope);
+  }
+
+  async sendToConnected(body: Record<string, unknown>): Promise<void> {
+    await Promise.all(this.connectedPeerIds.map((peerId) => this.sendTo(peerId, body)));
+  }
+
+  async waitForPeer(peerId: string, timeoutMs = 15_000): Promise<boolean> {
+    if (this.isPeerConnected(peerId)) return true;
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        off();
+        resolve(false);
+      }, timeoutMs);
+      const off = this.on("peers", () => {
+        if (!this.isPeerConnected(peerId)) return;
+        window.clearTimeout(timeout);
+        off();
+        resolve(true);
+      });
+    });
+  }
+
+  private async sendEnvelopeOnLink(link: Link, envelope: NetworkEnvelope) {
+    if (!link.channel || link.channel.readyState !== "open") {
+      throw new Error("The selected peer is no longer directly connected.");
+    }
+    const bytes = encodeJson(envelope);
+    const messageId = crypto.randomUUID();
+    const count = Math.max(1, Math.ceil(bytes.length / MAX_FRAGMENT));
+    for (let index = 0; index < count; index += 1) {
+      const cipher = await encryptBytes(
+        bytes.subarray(index * MAX_FRAGMENT, (index + 1) * MAX_FRAGMENT),
+        this.key,
+      );
+      await this.sendFrame(
+        link.channel,
+        JSON.stringify({ m: messageId, i: index, n: count, ...cipher } satisfies Fragment),
+      );
+    }
+  }
+
+  async sendBinaryTo(
+    peerId: string,
+    body: Record<string, unknown>,
+    payload: Uint8Array,
+  ): Promise<void> {
+    const link = [...this.links.values()].find(
+      (candidate) => candidate.remotePeerId === peerId && candidate.channel?.readyState === "open",
+    );
+    if (!link?.channel) throw new Error("The selected peer is no longer directly connected.");
+    const header = encodeJson({
+      id: crypto.randomUUID(),
+      origin: this.peerId,
+      body,
+      direct: true,
+    } satisfies BinaryHeader);
+    const packet = new Uint8Array(8 + header.length + payload.length);
+    packet.set(BINARY_MAGIC, 0);
+    new DataView(packet.buffer).setUint32(4, header.length);
+    packet.set(header, 8);
+    packet.set(payload, 8 + header.length);
+    await this.sendBinaryFrame(link.channel, packet.buffer);
   }
 
   private async broadcastEnvelope(envelope: NetworkEnvelope, exceptId?: string) {
@@ -332,6 +466,16 @@ export class PeerMesh extends EventTarget {
   }
 
   private async sendFrame(channel: RTCDataChannel, frame: string) {
+    await this.waitForCapacity(channel);
+    channel.send(frame);
+  }
+
+  private async sendBinaryFrame(channel: RTCDataChannel, frame: ArrayBuffer) {
+    await this.waitForCapacity(channel);
+    channel.send(frame);
+  }
+
+  private async waitForCapacity(channel: RTCDataChannel) {
     if (channel.bufferedAmount > HIGH_WATER) {
       await new Promise<void>((resolve) => {
         const done = () => {
@@ -341,7 +485,30 @@ export class PeerMesh extends EventTarget {
         channel.addEventListener("bufferedamountlow", done, { once: true });
       });
     }
-    channel.send(frame);
+  }
+
+  private async receiveBinary(link: Link, raw: ArrayBuffer | Blob) {
+    try {
+      const buffer = raw instanceof Blob ? await raw.arrayBuffer() : raw;
+      const packet = new Uint8Array(buffer);
+      if (packet.length < 8 || !BINARY_MAGIC.every((value, index) => packet[index] === value)) {
+        throw new Error("Received an unsupported binary peer packet.");
+      }
+      const headerLength = new DataView(buffer).getUint32(4);
+      if (headerLength <= 0 || 8 + headerLength > packet.length) {
+        throw new Error("Received a malformed binary peer packet.");
+      }
+      const envelope = decodeJson<BinaryHeader>(packet.subarray(8, 8 + headerLength));
+      if (link.remotePeerId && envelope.origin !== link.remotePeerId) {
+        throw new Error("Binary packet origin did not match its direct peer.");
+      }
+      envelope.body.data = packet.slice(8 + headerLength);
+      this.dispatchEvent(new CustomEvent("message", { detail: envelope }));
+    } catch (error) {
+      this.dispatchEvent(new CustomEvent("error", {
+        detail: error instanceof Error ? error.message : "Could not read an incoming binary peer packet.",
+      }));
+    }
   }
 
   private async receiveFragment(link: Link, raw: string) {
@@ -372,7 +539,7 @@ export class PeerMesh extends EventTarget {
       this.pruneSeen();
       if (envelope.body.type === "hello") link.remotePeerId = String(envelope.body.peerId);
       this.dispatchEvent(new CustomEvent("message", { detail: envelope }));
-      await this.broadcastEnvelope(envelope, link.id);
+      if (!envelope.direct) await this.broadcastEnvelope(envelope, link.id);
     } catch (error) {
       this.dispatchEvent(
         new CustomEvent("error", {
@@ -393,6 +560,15 @@ export class PeerMesh extends EventTarget {
     for (const link of this.offers.values()) link.pc.close();
     this.links.clear();
     this.offers.clear();
+    this.dispatchEvent(new CustomEvent("peers", { detail: 0 }));
+  }
+
+  restartConnections() {
+    for (const link of this.links.values()) link.pc.close();
+    for (const link of this.offers.values()) link.pc.close();
+    this.links.clear();
+    this.offers.clear();
+    this.pending.clear();
     this.dispatchEvent(new CustomEvent("peers", { detail: 0 }));
   }
 }

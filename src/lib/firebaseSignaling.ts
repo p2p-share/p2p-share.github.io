@@ -6,6 +6,8 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  limit,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -15,6 +17,12 @@ import {
 } from "firebase/firestore";
 import { ensureSignalingIdentity, firestore } from "./firebase";
 import type { PeerMesh } from "./mesh";
+import {
+  DISCOVERY_WINDOW,
+  OVERLAY_NEIGHBORS,
+  ringPosition,
+  selectOverlayNeighbors,
+} from "./overlay";
 
 type Signal = {
   senderPeerId: string;
@@ -28,16 +36,16 @@ type Signal = {
 
 const SIGNAL_TTL_MS = 30 * 60 * 1000;
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
-
 export type FirebaseRoomSecurity = {
   locked: boolean;
   salt?: string;
   verificationPayload?: string;
   verificationIv?: string;
+  isOwner?: boolean;
 };
 
 export async function getFirebaseRoomSecurity(roomId: string): Promise<FirebaseRoomSecurity | undefined> {
-  await ensureSignalingIdentity();
+  const user = await ensureSignalingIdentity();
   const snapshot = await getDoc(doc(firestore, "rooms", roomId));
   if (!snapshot.exists()) return;
   const data = snapshot.data();
@@ -46,6 +54,7 @@ export async function getFirebaseRoomSecurity(roomId: string): Promise<FirebaseR
     salt: typeof data.salt === "string" ? data.salt : undefined,
     verificationPayload: typeof data.verificationPayload === "string" ? data.verificationPayload : undefined,
     verificationIv: typeof data.verificationIv === "string" ? data.verificationIv : undefined,
+    isOwner: data.hostUid === user.uid,
   };
 }
 
@@ -53,6 +62,10 @@ export class FirebaseSignaling {
   private unsubscribers: Unsubscribe[] = [];
   private heartbeat?: number;
   private closed = false;
+  private connecting?: Promise<void>;
+  private reconnecting?: Promise<void>;
+  private listenersAttached = false;
+  private offerTargets = new Set<string>();
 
   constructor(
     private readonly roomId: string,
@@ -61,7 +74,17 @@ export class FirebaseSignaling {
     private readonly initialSecurity: FirebaseRoomSecurity,
   ) {}
 
-  async connect() {
+  connect() {
+    if (this.closed) return Promise.resolve();
+    if (this.unsubscribers.length) return Promise.resolve();
+    this.attachReconnectListeners();
+    this.connecting ||= this.establish().finally(() => {
+      this.connecting = undefined;
+    });
+    return this.connecting;
+  }
+
+  private async establish() {
     const user = await ensureSignalingIdentity();
     if (this.closed) return;
     const roomRef = doc(firestore, "rooms", this.roomId);
@@ -91,23 +114,43 @@ export class FirebaseSignaling {
     }
 
     const participantRef = doc(roomRef, "participants", this.mesh.peerId);
+    const ownRing = ringPosition(this.mesh.peerId);
     const announce = () => setDoc(participantRef, {
       uid: user.uid,
       name: this.name(),
+      ring: ownRing,
       joinedAt: serverTimestamp(),
       lastSeen: serverTimestamp(),
     }, { merge: true });
     await announce();
 
-    this.unsubscribers.push(onSnapshot(collection(roomRef, "participants"), (snapshot) => {
-      for (const change of snapshot.docChanges()) {
-        const peerId = change.doc.id;
-        if (change.type === "removed" || peerId === this.mesh.peerId) continue;
-        if (this.mesh.peerId < peerId && !this.mesh.hasPeer(peerId)) {
-          void this.createOffer(peerId);
-        }
+    const participants = collection(roomRef, "participants");
+    const discoveryQueries = [
+      query(participants, where("ring", ">=", ownRing), orderBy("ring", "asc"), limit(DISCOVERY_WINDOW)),
+      query(participants, where("ring", "<=", ownRing), orderBy("ring", "desc"), limit(DISCOVERY_WINDOW)),
+      query(participants, orderBy("ring", "asc"), limit(DISCOVERY_WINDOW)),
+      query(participants, orderBy("ring", "desc"), limit(DISCOVERY_WINDOW)),
+    ];
+    const queryCandidates = discoveryQueries.map(() => new Map<string, number>());
+    const reconcile = () => {
+      const candidates = new Map<string, number>();
+      queryCandidates.forEach((items) => items.forEach((ring, peerId) => candidates.set(peerId, ring)));
+      const nearest = selectOverlayNeighbors(this.mesh.peerId, candidates, OVERLAY_NEIGHBORS);
+      for (const peerId of nearest) {
+        if (this.mesh.peerId < peerId && !this.mesh.hasPeer(peerId)) void this.createOffer(peerId);
       }
-    }, (error) => this.mesh.reportError(`Automatic peer discovery failed: ${error.message}`)));
+    };
+    discoveryQueries.forEach((discoveryQuery, index) => {
+      this.unsubscribers.push(onSnapshot(discoveryQuery, (snapshot) => {
+        const next = new Map<string, number>();
+        snapshot.docs.forEach((participant) => {
+          const ring = participant.data().ring;
+          if (typeof ring === "number") next.set(participant.id, ring);
+        });
+        queryCandidates[index] = next;
+        reconcile();
+      }, (error) => this.mesh.reportError(`Automatic peer discovery failed: ${error.message}`)));
+    });
 
     const inbox = query(
       collection(roomRef, "signals"),
@@ -124,7 +167,48 @@ export class FirebaseSignaling {
     window.addEventListener("pagehide", this.handlePageHide);
   }
 
+  async reconnect() {
+    if (this.closed) return;
+    if (this.reconnecting) return this.reconnecting;
+    this.reconnecting = (async () => {
+      this.clearRealtimeState();
+      this.mesh.restartConnections();
+      await this.connect();
+    })().finally(() => {
+      this.reconnecting = undefined;
+    });
+    return this.reconnecting;
+  }
+
+  private attachReconnectListeners() {
+    if (this.listenersAttached) return;
+    this.listenersAttached = true;
+    window.addEventListener("online", this.handleReconnect);
+    window.addEventListener("pageshow", this.handleReconnect);
+    document.addEventListener("visibilitychange", this.handleVisibility);
+  }
+
+  private handleReconnect = () => {
+    void this.reconnect().catch((error) => {
+      this.mesh.reportError(error instanceof Error ? error.message : "Could not reconnect to the room.");
+    });
+  };
+
+  private handleVisibility = () => {
+    if (document.visibilityState === "visible") this.handleReconnect();
+  };
+
+  private clearRealtimeState() {
+    this.unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe());
+    if (this.heartbeat) window.clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+    this.offerTargets.clear();
+    window.removeEventListener("pagehide", this.handlePageHide);
+  }
+
   private async createOffer(targetPeerId: string) {
+    if (this.offerTargets.has(targetPeerId) || this.mesh.hasPeer(targetPeerId)) return;
+    this.offerTargets.add(targetPeerId);
     try {
       const offer = await this.mesh.createSignalingOffer(targetPeerId);
       if (!offer) return;
@@ -136,6 +220,8 @@ export class FirebaseSignaling {
       });
     } catch (error) {
       this.mesh.reportError(error instanceof Error ? error.message : "Could not create an automatic peer offer.");
+    } finally {
+      this.offerTargets.delete(targetPeerId);
     }
   }
 
@@ -201,9 +287,11 @@ export class FirebaseSignaling {
 
   disconnect() {
     this.closed = true;
-    this.unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe());
-    if (this.heartbeat) window.clearInterval(this.heartbeat);
-    window.removeEventListener("pagehide", this.handlePageHide);
+    this.clearRealtimeState();
+    window.removeEventListener("online", this.handleReconnect);
+    window.removeEventListener("pageshow", this.handleReconnect);
+    document.removeEventListener("visibilitychange", this.handleVisibility);
+    this.listenersAttached = false;
     void this.removeParticipant();
   }
 }

@@ -122,4 +122,7 @@ export type Transfer = {
   status: "running" | "done" | "failed";
   error?: string;
   startedAt?: number;
+  bytesPerSecond?: number;
+  phase?: "negotiating" | "transferring" | "verifying";
+  peerId?: string;
 };
