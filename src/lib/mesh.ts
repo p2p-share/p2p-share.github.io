@@ -27,6 +27,7 @@ type Link = {
   pc: RTCPeerConnection;
   channel?: RTCDataChannel;
   remotePeerId?: string;
+  remoteStream?: MediaStream;
 };
 
 type PendingMessage = {
@@ -38,6 +39,7 @@ type MeshEvents = {
   message: CustomEvent<NetworkEnvelope>;
   peers: CustomEvent<number>;
   error: CustomEvent<string>;
+  media: CustomEvent<{ peerId: string; stream: MediaStream }>;
 };
 
 const MAX_FRAGMENT = 24 * 1024;
@@ -50,6 +52,7 @@ export class PeerMesh extends EventTarget {
   private seen = new Set<string>();
   private pending = new Map<string, PendingMessage>();
   private key?: CryptoKey;
+  private localStream?: MediaStream;
 
   constructor(
     readonly roomId: string,
@@ -67,6 +70,12 @@ export class PeerMesh extends EventTarget {
     return [...this.links.values()].filter((link) => link.channel?.readyState === "open").length;
   }
 
+  hasPeer(peerId: string) {
+    return [...this.links.values(), ...this.offers.values()].some(
+      (link) => link.remotePeerId === peerId && link.pc.connectionState !== "closed",
+    );
+  }
+
   on<K extends keyof MeshEvents>(event: K, listener: (event: MeshEvents[K]) => void) {
     this.addEventListener(event, listener as EventListener);
     return () => this.removeEventListener(event, listener as EventListener);
@@ -76,6 +85,25 @@ export class PeerMesh extends EventTarget {
     // No STUN/TURN is intentional: host candidates keep signaling fully infrastructure-free.
     const pc = new RTCPeerConnection({ iceServers: [] });
     const link: Link = { id, pc };
+    const audio = pc.addTransceiver("audio", { direction: "sendrecv" });
+    const video = pc.addTransceiver("video", { direction: "sendrecv" });
+    if (this.localStream) {
+      void audio.sender.replaceTrack(this.localStream.getAudioTracks()[0] ?? null);
+      void video.sender.replaceTrack(this.localStream.getVideoTracks()[0] ?? null);
+    }
+    pc.ontrack = (event) => {
+      const stream = link.remoteStream ?? new MediaStream();
+      link.remoteStream = stream;
+      if (!stream.getTracks().some((track) => track.id === event.track.id)) stream.addTrack(event.track);
+      const emit = () => {
+        if (!link.remotePeerId) return;
+        this.dispatchEvent(
+          new CustomEvent("media", { detail: { peerId: link.remotePeerId, stream } }),
+        );
+      };
+      event.track.addEventListener("unmute", emit);
+      emit();
+    };
     pc.onconnectionstatechange = () => {
       if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
         this.links.delete(id);
@@ -108,7 +136,7 @@ export class PeerMesh extends EventTarget {
       this.dispatchEvent(new CustomEvent("error", { detail: "A peer connection encountered an error." }));
   }
 
-  async createInvite(locked: boolean, salt?: string): Promise<string> {
+  async createInvite(locked: boolean, salt?: string, access: "edit" | "read" = "edit"): Promise<string> {
     const offerId = crypto.randomUUID();
     const link = this.createConnection(offerId);
     const channel = link.pc.createDataChannel("sharecode", { ordered: true });
@@ -123,9 +151,77 @@ export class PeerMesh extends EventTarget {
       offerId,
       inviter: this.peerId,
       locked,
+      access,
       salt,
       description: link.pc.localDescription!,
     });
+  }
+
+  async createPeerOffer(target: string) {
+    if (target === this.peerId || this.hasPeer(target)) return;
+    const offerId = crypto.randomUUID();
+    const link = this.createConnection(offerId);
+    link.remotePeerId = target;
+    const channel = link.pc.createDataChannel("p2p-share", { ordered: true });
+    this.attachChannel(link, channel);
+    await link.pc.setLocalDescription(await link.pc.createOffer());
+    await waitForIceGathering(link.pc);
+    this.offers.set(offerId, link);
+    await this.send({
+      type: "peer-offer",
+      target,
+      offerId,
+      inviter: this.peerId,
+      description: link.pc.localDescription,
+    });
+  }
+
+  async acceptPeerOffer(
+    offerId: string,
+    inviter: string,
+    description: RTCSessionDescriptionInit,
+  ) {
+    if (this.hasPeer(inviter)) return;
+    const link = this.createConnection(offerId);
+    link.remotePeerId = inviter;
+    await link.pc.setRemoteDescription(description);
+    await link.pc.setLocalDescription(await link.pc.createAnswer());
+    await waitForIceGathering(link.pc);
+    this.links.set(link.id, link);
+    await this.send({
+      type: "peer-answer",
+      target: inviter,
+      offerId,
+      responder: this.peerId,
+      description: link.pc.localDescription,
+    });
+  }
+
+  async acceptPeerAnswer(
+    offerId: string,
+    responder: string,
+    description: RTCSessionDescriptionInit,
+  ) {
+    const link = this.offers.get(offerId);
+    if (!link || link.remotePeerId !== responder) return;
+    await link.pc.setRemoteDescription(description);
+    this.links.set(link.id, link);
+    this.offers.delete(offerId);
+  }
+
+  async setLocalMedia(stream?: MediaStream) {
+    this.localStream = stream;
+    await Promise.all(
+      [...this.links.values(), ...this.offers.values()].flatMap((link) =>
+        link.pc.getTransceivers().map((transceiver) =>
+          transceiver.sender.replaceTrack(
+            transceiver.receiver.track.kind === "audio"
+              ? stream?.getAudioTracks()[0] ?? null
+              : stream?.getVideoTracks()[0] ?? null,
+          ),
+        ),
+      ),
+    );
   }
 
   async acceptInvite(token: string): Promise<string> {

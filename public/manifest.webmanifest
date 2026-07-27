@@ -1,7 +1,7 @@
 {
   "name": "p2p-share — Private P2P Collaboration",
   "short_name": "p2p-share",
-  "description": "Private, serverless code collaboration and file sharing.",
+  "description": "Private peer-to-peer code editor with live collaboration, code runner, file sharing, group chat and WebRTC meetings.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

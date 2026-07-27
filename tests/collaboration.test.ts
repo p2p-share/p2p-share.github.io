@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { ChatMessage } from "../src/types";
+import type { ChatMessage, ReviewEntry } from "../src/types";
 
 function synchronize(source: Y.Doc, targets: Y.Doc[]) {
   const update = Y.encodeStateAsUpdate(source);
@@ -44,5 +44,35 @@ describe("multi-peer collaboration", () => {
         "Ready to review",
       ]);
     }
+  });
+
+  it("synchronizes multiple collaborative files and threaded review entries", () => {
+    const host = new Y.Doc();
+    const peer = new Y.Doc();
+    const files = host.getMap<Y.Text>("code-files");
+    const app = new Y.Text("console.log('app')");
+    const test = new Y.Text("expect(true)");
+    files.set("app", app);
+    files.set("test", test);
+    host.getArray<ReviewEntry>("reviews").push([{
+      id: "comment-1",
+      threadId: "thread-1",
+      kind: "feedback",
+      author: "Alex",
+      peerId: "peer-a",
+      body: "@Sam please review",
+      line: 1,
+      createdAt: 1,
+    }]);
+    synchronize(host, [peer]);
+
+    expect([...peer.getMap<Y.Text>("code-files").values()].map((value) => value.toString())).toEqual([
+      "console.log('app')",
+      "expect(true)",
+    ]);
+    expect(peer.getArray<ReviewEntry>("reviews").get(0)).toMatchObject({
+      kind: "feedback",
+      line: 1,
+    });
   });
 });

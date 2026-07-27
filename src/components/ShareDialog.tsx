@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import QRCode from "qrcode";
+import type { AccessMode } from "../types";
 import { Dialog } from "./Dialog";
 import { Icon } from "./Icons";
 
@@ -12,6 +14,19 @@ function CopyField({
   shareable?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  const [qr, setQr] = useState("");
+  useEffect(() => {
+    if (!showQr || !value) return;
+    let active = true;
+    void QRCode.toDataURL(value, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 320,
+      color: { dark: "#18181b", light: "#ffffff" },
+    }).then((result) => active && setQr(result));
+    return () => { active = false; };
+  }, [showQr, value]);
   return (
     <div className="field-group">
       <label>{label}</label>
@@ -37,7 +52,13 @@ function CopyField({
             <Icon name="share" />
           </button>
         )}
+        {shareable && (
+          <button className="icon-button" aria-label={`Show QR code for ${label}`} onClick={() => setShowQr((value) => !value)}>
+            <Icon name="qr" />
+          </button>
+        )}
       </div>
+      {showQr && <div className="invite-qr"><img src={qr} alt={`QR code for ${label}`} /><span>Scan with another device to open this invite.</span></div>}
     </div>
   );
 }
@@ -65,11 +86,12 @@ export function ShareDialog({
   busy: boolean;
   error: string;
   peerCount: number;
-  onCreateInvite: () => void;
+  onCreateInvite: (access: AccessMode) => void;
   onAcceptAnswer: (answer: string) => void;
   onJoin: () => void;
 }) {
   const [answerInput, setAnswerInput] = useState("");
+  const [access, setAccess] = useState<AccessMode>("edit");
   return (
     <Dialog
       open={open}
@@ -118,10 +140,23 @@ export function ShareDialog({
             This stable link restores data only from this browser. It does not discover peers by itself.
           </p>
           <div className="divider"><span>connect a peer</span></div>
+          {!inviteLink && (
+            <fieldset className="access-picker">
+              <legend>Invite permission</legend>
+              <label className={access === "edit" ? "active" : ""}>
+                <input type="radio" name="invite-access" value="edit" checked={access === "edit"} onChange={() => setAccess("edit")} />
+                <Icon name="edit" /><span><strong>Can edit</strong><small>Collaborate on code, files, chat and reviews.</small></span>
+              </label>
+              <label className={access === "read" ? "active" : ""}>
+                <input type="radio" name="invite-access" value="read" checked={access === "read"} onChange={() => setAccess("read")} />
+                <Icon name="eye" /><span><strong>Read only</strong><small>View, preview, download and join calls without editing.</small></span>
+              </label>
+            </fieldset>
+          )}
           {!inviteLink ? (
-            <button className="primary-button" disabled={busy} onClick={onCreateInvite}>
+            <button className="primary-button" disabled={busy} onClick={() => onCreateInvite(access)}>
               <Icon name="plus" />
-              {busy ? "Gathering connection details…" : "Create one-time invite"}
+              {busy ? "Gathering connection details…" : `Create ${access === "read" ? "read-only" : "editable"} invite`}
             </button>
           ) : (
             <CopyField label="One-time invite link" value={inviteLink} shareable />

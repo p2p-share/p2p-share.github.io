@@ -1,4 +1,4 @@
-const CACHE_NAME = "p2p-share-shell-v2";
+const CACHE_NAME = "p2p-share-shell-v3";
 const APP_SHELL = [
   "./",
   "./index.html",

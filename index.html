@@ -2,23 +2,102 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'nonce-p2p-share-schema'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; connect-src 'self' https:; worker-src 'self' blob:; frame-src 'self' blob:; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; upgrade-insecure-requests" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      name="description"
-      content="Private, serverless, peer-to-peer code collaboration in your browser."
-    />
+    <title>P2P Code Collaboration &amp; Video Calls | p2p-share</title>
+    <meta name="description" content="Private peer-to-peer code editor with live collaboration, code sharing, group chat, video calls, file transfer, version logs and a browser code runner." />
+    <meta name="author" content="Mr-Jerry-Haxor" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="keywords" content="peer-to-peer code editor, collaborative coding, real-time code sharing, serverless code editor, online code runner, P2P video call, private code collaboration, browser IDE, pair programming" />
     <meta name="theme-color" content="#09090b" />
-    <meta property="og:title" content="p2p-share — private P2P code collaboration" />
-    <meta property="og:description" content="Collaborate on code directly between peers, with no storage server." />
+    <link rel="canonical" href="https://p2p-share.github.io/" />
+    <link rel="author" href="https://github.com/Mr-Jerry-Haxor" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="p2p-share" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content="P2P Code Collaboration &amp; Video Calls | p2p-share" />
+    <meta property="og:description" content="Collaborate on code, run programs, transfer files, chat and meet over direct peer-to-peer connections—with no application data server." />
     <meta property="og:image" content="https://p2p-share.github.io/icon-512.png" />
-    <meta property="og:url" content="https://p2p-share.github.io" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="p2p-share peer-to-peer collaborative coding logo" />
+    <meta property="og:url" content="https://p2p-share.github.io/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="P2P Code Collaboration &amp; Video Calls | p2p-share" />
+    <meta name="twitter:description" content="Private real-time coding, code execution, file sharing, group chat and WebRTC meetings directly between peers." />
+    <meta name="twitter:image" content="https://p2p-share.github.io/icon-512.png" />
+    <meta name="twitter:image:alt" content="p2p-share peer-to-peer collaborative coding logo" />
     <link rel="icon" href="./favicon.png" type="image/png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-    <title>p2p-share — private P2P code collaboration</title>
+    <script type="application/ld+json" nonce="p2p-share-schema">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://p2p-share.github.io/#website",
+            "url": "https://p2p-share.github.io/",
+            "name": "p2p-share",
+            "description": "Private peer-to-peer collaborative coding and communication.",
+            "publisher": { "@id": "https://p2p-share.github.io/#author" }
+          },
+          {
+            "@type": "Person",
+            "@id": "https://p2p-share.github.io/#author",
+            "name": "Mr-Jerry-Haxor",
+            "url": "https://github.com/Mr-Jerry-Haxor",
+            "sameAs": ["https://github.com/Mr-Jerry-Haxor"]
+          },
+          {
+            "@type": ["SoftwareApplication", "WebApplication"],
+            "@id": "https://p2p-share.github.io/#application",
+            "name": "p2p-share",
+            "url": "https://p2p-share.github.io/",
+            "image": "https://p2p-share.github.io/icon-512.png",
+            "description": "A private, serverless, peer-to-peer code editor with real-time collaboration, code execution, file sharing, group chat, version attribution, and audio or video meetings.",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "Collaborative code editor",
+            "operatingSystem": "Any operating system with a modern web browser",
+            "browserRequirements": "Requires a modern browser with WebRTC, WebAssembly, IndexedDB and Web Crypto support",
+            "softwareVersion": "1.0.0",
+            "isAccessibleForFree": true,
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            },
+            "author": { "@id": "https://p2p-share.github.io/#author" },
+            "featureList": [
+              "Real-time peer-to-peer collaborative code editing",
+              "WebRTC audio meetings and video conferencing",
+              "Browser-based JavaScript and TypeScript code runner",
+              "Multi-language execution through optional Judge0 CE",
+              "Peer group chat and line-level version attribution",
+              "Direct file sharing up to 1 GB",
+              "Optional password protection and local recovery",
+              "Offline-capable progressive web application"
+            ]
+          }
+        ]
+      }
+    </script>
+    <style nonce="p2p-share-schema">
+      .seo-shell{max-width:920px;margin:0 auto;padding:48px 24px;color:#e4e4e7;background:#09090b;font:16px/1.6 system-ui,sans-serif}.seo-shell h1{font-size:2.4rem;line-height:1.1}.seo-shell h2{margin-top:32px}.seo-shell a{color:#9b87ff}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="seo-shell">
+        <h1>Private peer-to-peer collaborative code editor</h1>
+        <p>p2p-share is a free, serverless workspace for real-time collaborative coding, private code sharing and remote pair programming directly between browsers.</p>
+        <h2>Code, run and communicate in one private room</h2>
+        <p>Edit code together with multi-peer synchronization, import or download source files, run JavaScript and TypeScript in the browser, inspect attributed version logs, transfer files, use group chat, and start WebRTC audio or video calls while coding.</p>
+        <h2>No application data server</h2>
+        <p>Documents and files remain with connected peers or in optional browser-local recovery storage. Password protection, offline editing and direct peer connections help teams collaborate without a centralized application database.</p>
+        <p>Created by <a href="https://github.com/Mr-Jerry-Haxor" rel="author">Mr-Jerry-Haxor</a>.</p>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

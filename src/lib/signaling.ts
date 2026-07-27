@@ -1,4 +1,5 @@
 import { decodeToken, encodeToken } from "./encoding";
+import type { AccessMode } from "../types";
 
 export type InviteToken = {
   v: 1;
@@ -7,6 +8,7 @@ export type InviteToken = {
   offerId: string;
   inviter: string;
   locked: boolean;
+  access?: AccessMode;
   salt?: string;
   description: RTCSessionDescriptionInit;
 };

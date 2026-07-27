@@ -1,18 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
+import { ActivityPanel } from "./components/ActivityPanel";
+import { CallPanel } from "./components/CallPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import { CodeEditor, languages } from "./components/CodeEditor";
+import { CodeFileTabs } from "./components/CodeFileTabs";
 import { Dialog } from "./components/Dialog";
 import { FilesPanel } from "./components/FilesPanel";
 import { Icon } from "./components/Icons";
+import { LanguagePicker } from "./components/LanguagePicker";
 import { ShareDialog } from "./components/ShareDialog";
+import { RunnerPanel } from "./components/RunnerPanel";
+import { ReviewPanel } from "./components/ReviewPanel";
+import { PublishPanel } from "./components/PublishPanel";
+import { ProjectPanel } from "./components/ProjectPanel";
+import { WorkbenchPanel } from "./components/WorkbenchPanel";
+import { CommandPalette, type Command } from "./components/CommandPalette";
+import { analyzeCode, formatCode } from "./lib/analysis";
+import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
 import { deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
-import { documentFilename, documentStats, downloadText } from "./lib/document";
+import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
+import {
+  downloadProjectZip,
+  importProjectZip,
+  materializeProject,
+  MAX_PROJECT_FILES,
+  MAX_PROJECT_SIZE,
+  projectSize,
+  readTextProjectFile,
+  sanitizeProjectPath,
+  type ImportCandidate,
+} from "./lib/project";
 import { base64ToBytes, bytesToBase64 } from "./lib/encoding";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
+import { canRunLocally, emptyRunResult, runLocalCode, runWithJudge0 } from "./lib/runner";
 import type { InviteToken } from "./lib/signaling";
-import type { ChatMessage, Presence, RoomRecord, SharedFile, Transfer } from "./types";
+import type { AccessMode, AnalysisReport, ChatMessage, CodeFileMeta, Presence, ProjectManifest, ReviewEntry, RoomRecord, RunResult, SharedFile, Transfer, VersionLog } from "./types";
 
 type Session = {
   roomId: string;
@@ -21,10 +45,17 @@ type Session = {
   meta: Y.Map<unknown>;
   files: Y.Map<SharedFile>;
   messages: Y.Array<ChatMessage>;
+  logs: Y.Array<VersionLog>;
+  runner: Y.Map<unknown>;
+  codeFiles: Y.Map<Y.Text>;
+  codeFileMeta: Y.Map<CodeFileMeta>;
+  reviews: Y.Array<ReviewEntry>;
+  description: Y.Text;
   mesh: PeerMesh;
   key?: CryptoKey;
   locked: boolean;
   salt?: string;
+  tabs: CrossTabCoordinator;
 };
 
 type BootState = {
@@ -50,6 +81,7 @@ const MAX_FILE_SIZE = 1024 ** 3;
 const MAX_EDITOR_FILE_SIZE = 256 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
 const FILE_CHUNK_SIZE = 48 * 1024;
+const STREAM_IMPORT_ORIGIN = "stream-import";
 const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
 
 function newRoomId() {
@@ -81,6 +113,35 @@ function updateTransfer(
   setter((current) => current.map((item) => (item.id === id ? { ...item, ...changes } : item)));
 }
 
+async function droppedProjectFiles(items: DataTransferItemList): Promise<File[]> {
+  const files: File[] = [];
+  async function walk(entry: any, prefix = ""): Promise<void> {
+    if (entry?.isFile) {
+      const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+      Object.defineProperty(file, "webkitRelativePath", { configurable: true, value: `${prefix}${file.name}` });
+      files.push(file);
+      return;
+    }
+    if (entry?.isDirectory) {
+      const reader = entry.createReader();
+      while (true) {
+        const batch = await new Promise<any[]>((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!batch.length) break;
+        for (const child of batch) await walk(child, `${prefix}${entry.name}/`);
+      }
+    }
+  }
+  for (const item of Array.from(items)) {
+    const entry = (item as any).webkitGetAsEntry?.();
+    if (entry) await walk(entry);
+    else {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  return files;
+}
+
 export function App() {
   const [session, setSession] = useState<Session>();
   const [boot, setBoot] = useState<BootState>();
@@ -93,8 +154,17 @@ export function App() {
   const [answerToken, setAnswerToken] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState("");
-  const [filesOpen, setFilesOpen] = useState(() => window.innerWidth > 780);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(() => window.innerWidth > 1100);
+  const [activeFileId, setActiveFileId] = useState("main");
   const [chatOpen, setChatOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [runnerOpen, setRunnerOpen] = useState(false);
+  const [callOpen, setCallOpen] = useState(false);
   const [securityOpen, setSecurityOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
@@ -104,8 +174,22 @@ export function App() {
     Math.min(20, Math.max(12, Number(localStorage.getItem("sharecode:font-size")) || 14)),
   );
   const [lineWrap, setLineWrap] = useState(
-    () => localStorage.getItem("sharecode:line-wrap") !== "off",
+    () => localStorage.getItem("sharecode:line-wrap") === "on",
   );
+  const [editorTheme, setEditorTheme] = useState<"light" | "dark" | "contrast">(
+    () => (localStorage.getItem("sharecode:editor-theme") as "light" | "dark" | "contrast") || "dark",
+  );
+  const [tabSize, setTabSize] = useState(() => Number(localStorage.getItem("sharecode:tab-size")) || 2);
+  const [keyBinding, setKeyBinding] = useState<"standard" | "vim" | "emacs">(
+    () => (localStorage.getItem("sharecode:keybinding") as "standard" | "vim" | "emacs") || "standard",
+  );
+  const [minimap, setMinimap] = useState(() => localStorage.getItem("sharecode:minimap") !== "off");
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport>();
+  const [analyzing, setAnalyzing] = useState(false);
+  const [projectWarnings, setProjectWarnings] = useState<string[]>([]);
+  const [otherTabs, setOtherTabs] = useState(0);
+  const [saveLeader, setSaveLeader] = useState(true);
+  const [importProgress, setImportProgress] = useState<{ name: string; percent: number; bytes: number }>();
   const needsOnboarding = useRef(!sessionStorage.getItem("sharecode:guest-name"));
   const [onboardingOpen, setOnboardingOpen] = useState(needsOnboarding.current);
   const [onboardingError, setOnboardingError] = useState("");
@@ -122,16 +206,38 @@ export function App() {
   const [localFiles, setLocalFiles] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [toast, setToast] = useState("");
+  const [judgeEndpoint, setJudgeEndpoint] = useState(() => localStorage.getItem("sharecode:judge0-endpoint") || "");
+  const [localStream, setLocalStream] = useState<MediaStream>();
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [callMode, setCallMode] = useState<"audio" | "video">();
+  const [muted, setMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
   const bootStarted = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const sinks = useRef(new Map<string, IncomingSink>());
   const importInput = useRef<HTMLInputElement>(null);
+  const importCancelled = useRef(false);
   const localNameRef = useRef(localName);
   const localColor = useMemo(() => palette[Math.floor(Math.random() * palette.length)], []);
+  const activeText = session?.codeFiles.get(activeFileId) || session?.text;
+  const activeMeta = session?.codeFileMeta.get(activeFileId);
+  const accessMode: AccessMode = boot?.invite?.access
+    || (boot?.roomId ? sessionStorage.getItem(`p2p-share:access:${boot.roomId}`) as AccessMode : undefined)
+    || "edit";
+  const isReadOnly = accessMode === "read";
 
   useEffect(() => {
     localNameRef.current = localName;
   }, [localName]);
+
+  useEffect(() => () => {
+    localStream?.getTracks().forEach((track) => track.stop());
+  }, [localStream]);
+
+  useEffect(() => {
+    if (!session || session.codeFiles.has(activeFileId)) return;
+    setActiveFileId(session.codeFiles.keys().next().value || "main");
+  }, [activeFileId, revision, session]);
 
   useEffect(() => {
     const handleOnline = () => setOnline(true);
@@ -169,11 +275,43 @@ export function App() {
       const meta = doc.getMap("meta");
       const files = doc.getMap<SharedFile>("files");
       const messages = doc.getArray<ChatMessage>("chat");
+      const logs = doc.getArray<VersionLog>("versions");
+      const runner = doc.getMap("runner");
+      const codeFiles = doc.getMap<Y.Text>("code-files");
+      const codeFileMeta = doc.getMap<CodeFileMeta>("code-file-meta");
+      const reviews = doc.getArray<ReviewEntry>("reviews");
+      const description = doc.getText("description");
       if (!meta.has("name")) meta.set("name", bootState.record?.name || "untitled");
       if (!meta.has("language")) meta.set("language", bootState.record?.language || "javascript");
+      if (!meta.has("visibility")) meta.set("visibility", "private");
+      if (!meta.has("projectManifest")) {
+        meta.set("projectManifest", {
+          version: 1,
+          name: String(bootState.record?.name || "untitled-project"),
+          description: "",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        } satisfies ProjectManifest);
+      }
+      if (bootState.invite?.access) {
+        sessionStorage.setItem(`p2p-share:access:${bootState.roomId}`, bootState.invite.access);
+      }
+      if (!codeFiles.has("main")) {
+        const main = new Y.Text();
+        if (text.length) main.insert(0, text.toString());
+        codeFiles.set("main", main);
+        codeFileMeta.set("main", {
+          name: String(meta.get("name") || "untitled"),
+          language: String(meta.get("language") || "javascript"),
+          createdBy: localNameRef.current,
+          createdAt: Date.now(),
+        });
+      }
+      const mainText = codeFiles.get("main")!;
       const locked = Boolean(bootState.record?.locked || bootState.invite?.locked);
       const salt = bootState.record?.salt || bootState.invite?.salt;
       const mesh = new PeerMesh(bootState.roomId, key);
+      const tabs = new CrossTabCoordinator(bootState.roomId);
       const availableIds: string[] = [];
       for (const [id, file] of files.entries()) {
         if (await getFile(bootState.roomId, id)) {
@@ -183,7 +321,10 @@ export function App() {
         }
       }
       setLocalFiles(new Set(availableIds));
-      setSession({ roomId: bootState.roomId, doc, text, meta, files, messages, mesh, key, locked, salt });
+      setSession({
+        roomId: bootState.roomId, doc, text: mainText, meta, files, messages, logs, runner,
+        codeFiles, codeFileMeta, reviews, description, mesh, key, locked, salt, tabs,
+      });
       const recoverySetting = localStorage.getItem(`sharecode:recovery:${bootState.roomId}`) !== "off";
       setRecovery(recoverySetting);
       history.replaceState(null, "", roomUrl(bootState.roomId));
@@ -219,7 +360,7 @@ export function App() {
 
   const persist = useCallback(
     async (current = session) => {
-      if (!current || !recovery) return;
+      if (!current || !recovery || !current.tabs.isLeader) return;
       const update = Y.encodeStateAsUpdate(current.doc);
       const cipher = await encryptBytes(update, current.key);
       await putRoom({
@@ -240,30 +381,87 @@ export function App() {
     const redraw = () => setRevision((value) => value + 1);
     const scheduleSave = (_update: Uint8Array, origin: unknown) => {
       redraw();
-      if (origin !== "remote") {
+      if (origin !== "remote" && origin !== "cross-tab" && origin !== STREAM_IMPORT_ORIGIN) {
         void session.mesh.send({ type: "y-update", update: bytesToBase64(_update) });
       }
+      if (origin !== "cross-tab") session.tabs.sendUpdate(_update);
+      const recent = {
+        roomId: session.roomId,
+        name: String((session.meta.get("projectManifest") as ProjectManifest | undefined)?.name || session.meta.get("name") || "untitled"),
+        modifiedAt: Date.now(),
+      };
+      mergeRecentProject(recent);
+      session.tabs.announceRecent(recent);
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => void persist(session), 350);
     };
     session.doc.on("update", scheduleSave);
     session.files.observe(redraw);
+    const offTabs = session.tabs.on("tabs", (event) => {
+      setOtherTabs(event.detail.count);
+      setSaveLeader(event.detail.leader);
+    });
+    const offTabUpdate = session.tabs.on("update", (event) => Y.applyUpdate(session.doc, event.detail, "cross-tab"));
+    const offSnippet = session.tabs.on("snippet", (event) => {
+      void addProjectCandidates([event.detail]);
+      showToast(`Received ${event.detail.name} from another tab`);
+    });
+    const offRecent = session.tabs.on("recent", (event) => { mergeRecentProject(event.detail); });
+    const offAppUpdate = session.tabs.on("app-update", (event) => showToast(`p2p-share ${event.detail} is ready in another tab. Reload to update.`));
     void persist(session);
     return () => {
       session.doc.off("update", scheduleSave);
       session.files.unobserve(redraw);
+      offTabs();
+      offTabUpdate();
+      offSnippet();
+      offRecent();
+      offAppUpdate();
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
-  }, [persist, session]);
+  }, [persist, session, showToast]);
+
+  useEffect(() => {
+    if (!session) return;
+    return () => session.tabs.close();
+  }, [session]);
+
+  useEffect(() => {
+    if (!session || !("serviceWorker" in navigator)) return;
+    let registration: ServiceWorkerRegistration | undefined;
+    const updateFound = () => {
+      const worker = registration?.installing;
+      worker?.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) {
+          session.tabs.announceAppUpdate("update");
+          showToast("A new app version is ready. Reload when convenient.");
+        }
+      });
+    };
+    void navigator.serviceWorker.ready.then((value) => {
+      registration = value;
+      registration.addEventListener("updatefound", updateFound);
+    });
+    return () => registration?.removeEventListener("updatefound", updateFound);
+  }, [session, showToast]);
 
   useEffect(() => {
     if (!session) return;
     const timer = window.setTimeout(
-      () => setStats(documentStats(session.text.toString())),
-      session.text.length > LARGE_DOCUMENT_THRESHOLD ? 900 : 250,
+      () => setStats(documentStats(activeText?.toString() || "")),
+      (activeText?.length || 0) > LARGE_DOCUMENT_THRESHOLD ? 900 : 250,
     );
     return () => window.clearTimeout(timer);
-  }, [revision, session]);
+  }, [activeText, revision, session]);
+
+  useEffect(() => {
+    if (!session || isReadOnly || !activeText || !activeMeta || activeMeta.language !== "text" || activeText.length < 8 || activeText.length > 1_000_000) return;
+    const timer = window.setTimeout(() => {
+      const detected = detectLanguage(activeText.toString(), activeMeta.name);
+      if (detected !== "text") session.codeFileMeta.set(activeFileId, { ...activeMeta, language: detected });
+    }, 550);
+    return () => window.clearTimeout(timer);
+  }, [activeFileId, activeMeta, activeText, isReadOnly, revision, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -322,6 +520,39 @@ export function App() {
             ...current.filter((item) => item.peerId !== next.peerId),
             next,
           ]);
+          if (session.mesh.peerId < next.peerId && !session.mesh.hasPeer(next.peerId)) {
+            await session.mesh.createPeerOffer(next.peerId);
+          }
+          return;
+        }
+        if (body.type === "peer-offer" && body.target === session.mesh.peerId) {
+          await session.mesh.acceptPeerOffer(
+            String(body.offerId),
+            String(body.inviter),
+            body.description as RTCSessionDescriptionInit,
+          );
+          return;
+        }
+        if (body.type === "peer-answer" && body.target === session.mesh.peerId) {
+          await session.mesh.acceptPeerAnswer(
+            String(body.offerId),
+            String(body.responder),
+            body.description as RTCSessionDescriptionInit,
+          );
+          return;
+        }
+        if (body.type === "call-state") {
+          const peerId = String(body.peerId);
+          if (body.active) {
+            setCallOpen(true);
+            showToast(`${String(body.name)} started a ${String(body.mode)} call`);
+          } else {
+            setRemoteStreams((current) => {
+              const next = new Map(current);
+              next.delete(peerId);
+              return next;
+            });
+          }
           return;
         }
         if (body.type === "file-request" && body.target === session.mesh.peerId) {
@@ -386,6 +617,9 @@ export function App() {
         showToast(message);
       });
     });
+    const offMedia = session.mesh.on("media", (event) => {
+      setRemoteStreams((current) => new Map(current).set(event.detail.peerId, event.detail.stream));
+    });
     const heartbeat = window.setInterval(() => {
       sendPresence();
       setPresences((current) => current.filter((item) => Date.now() - item.lastSeen < 45_000));
@@ -394,6 +628,7 @@ export function App() {
       offPeers();
       offError();
       offMessage();
+      offMedia();
       window.clearInterval(heartbeat);
       session.mesh.disconnect();
     };
@@ -418,12 +653,12 @@ export function App() {
     }
   };
 
-  const createInvite = async () => {
+  const createInvite = async (access: AccessMode) => {
     if (!session) return;
     setShareBusy(true);
     setShareError("");
     try {
-      const token = await session.mesh.createInvite(session.locked, session.salt);
+      const token = await session.mesh.createInvite(session.locked, session.salt, access);
       const url = `${location.origin}${location.pathname}#invite=${encodeURIComponent(token)}`;
       setInviteLink(url);
     } catch (error) {
@@ -538,7 +773,7 @@ export function App() {
   const copyDocument = async () => {
     if (!session) return;
     try {
-      await navigator.clipboard.writeText(session.text.toString());
+      await navigator.clipboard.writeText(activeText?.toString() || "");
       showToast("Code copied to clipboard");
     } catch {
       showToast("Clipboard access was blocked by this browser.");
@@ -547,41 +782,305 @@ export function App() {
 
   const exportDocument = () => {
     if (!session) return;
-    const name = String(session.meta.get("name") || "untitled");
-    const language = String(session.meta.get("language") || "text");
-    downloadText(session.text.toString(), documentFilename(name, language));
+    const name = activeMeta?.name || "untitled";
+    const language = activeMeta?.language || "text";
+    downloadText(activeText?.toString() || "", documentFilename(name, language));
     showToast("Document downloaded");
   };
 
   const importDocument = async (file?: File) => {
-    if (!session || !file) return;
+    if (!session || !file || isReadOnly) return;
     if (file.size > MAX_EDITOR_FILE_SIZE) {
       showToast("The collaborative editor accepts text files up to 256 MB. Share larger files as attachments.");
       return;
     }
-    const current = session.text.toString();
-    if (current && !window.confirm("Replace the current editor contents with this file?")) return;
+    if (!activeText) return;
+    let targetText = activeText;
+    let targetId = activeFileId;
+    if (activeText.length) {
+      targetId = crypto.randomUUID();
+      targetText = new Y.Text();
+      session.codeFiles.set(targetId, targetText);
+      session.codeFileMeta.set(targetId, {
+        name: file.name,
+        language: languageFromFilename(file.name),
+        createdBy: localName,
+        createdAt: Date.now(),
+      });
+      setActiveFileId(targetId);
+    }
+    importCancelled.current = false;
+    setImportProgress({ name: file.name, percent: 0, bytes: 0 });
     try {
-      const content = await file.text();
-      if (session.text.length) session.text.delete(0, session.text.length);
-      const chunkSize = 1024 * 1024;
-      for (let offset = 0; offset < content.length; offset += chunkSize) {
-        session.text.insert(session.text.length, content.slice(offset, offset + chunkSize));
-        if (offset && offset % (8 * chunkSize) === 0) {
-          showToast(`Opening ${Math.round((offset / content.length) * 100)}%…`);
-          await new Promise((resolve) => window.setTimeout(resolve, 0));
+      if (targetText.length) {
+        session.logs.push([{
+          id: crypto.randomUUID(),
+          peerId: session.mesh.peerId,
+          author: localName,
+          color: localColor,
+          action: "delete",
+          fromLine: 1,
+          toLine: stats.lines,
+          text: `[Previous ${stats.lines.toLocaleString()}-line document replaced by imported file]`,
+          timestamp: Date.now(),
+        }]);
+        targetText.delete(0, targetText.length);
+      }
+      const reader = file.stream().getReader();
+      const decoder = new TextDecoder("utf-8", { fatal: false });
+      const targetChunkSize = 1024 * 1024;
+      let buffer = "";
+      let processed = 0;
+      let line = 1;
+      const append = async (value: string) => {
+        if (!value) return;
+        let newLines = 0;
+        for (let index = 0; index < value.length; index += 1) {
+          if (value.charCodeAt(index) === 10) newLines += 1;
+        }
+        let importUpdate: Uint8Array | undefined;
+        const captureUpdate = (update: Uint8Array, origin: unknown) => {
+          if (origin === STREAM_IMPORT_ORIGIN) importUpdate = update;
+        };
+        session.doc.on("update", captureUpdate);
+        session.doc.transact(() => {
+          targetText.insert(targetText.length, value);
+          session.logs.push([{
+            id: crypto.randomUUID(),
+            peerId: session.mesh.peerId,
+            author: localName,
+            color: localColor,
+            action: "insert",
+            fromLine: line,
+            toLine: line + newLines,
+            text: value.length > 8_000
+              ? `${value.slice(0, 8_000)}\n[… ${value.length - 8_000} more imported characters …]`
+              : value,
+            timestamp: Date.now(),
+          }]);
+        }, STREAM_IMPORT_ORIGIN);
+        session.doc.off("update", captureUpdate);
+        if (importUpdate) {
+          await session.mesh.send({
+            type: "y-update",
+            update: bytesToBase64(importUpdate),
+          });
+        }
+        line += newLines;
+        setImportProgress({
+          name: file.name,
+          percent: file.size ? Math.min(100, Math.round((processed / file.size) * 100)) : 100,
+          bytes: processed,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      };
+      while (true) {
+        if (importCancelled.current) {
+          await reader.cancel();
+          throw new DOMException("Import cancelled.", "AbortError");
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        processed += value.byteLength;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length >= targetChunkSize) {
+          const chunk = buffer;
+          buffer = "";
+          await append(chunk);
         }
       }
-      session.meta.set("name", file.name.replace(/\.[^.]+$/, "") || "untitled");
+      buffer += decoder.decode();
+      await append(buffer);
+      session.codeFileMeta.set(targetId, {
+        name: file.name,
+        language: languageFromFilename(file.name),
+        createdBy: localName,
+        createdAt: Date.now(),
+      });
       showToast(`${file.name} opened`);
-    } catch {
-      showToast("This file could not be read as text.");
+    } catch (error) {
+      showToast(error instanceof DOMException && error.name === "AbortError"
+        ? "Import cancelled. The content imported so far remains in the editor."
+        : "This file could not be imported as text.");
+    } finally {
+      setImportProgress(undefined);
+      importCancelled.current = false;
+    }
+  };
+
+  const addProjectCandidates = async (candidates: ImportCandidate[]) => {
+    if (!session || isReadOnly || !candidates.length) return;
+    const existing = new Set([...session.codeFileMeta.values()].map((meta) => meta.name.toLowerCase()));
+    const currentSize = materializeProject(session.codeFiles, session.codeFileMeta)
+      .reduce((total, file) => total + new Blob([file.content]).size, 0);
+    const incomingSize = candidates.reduce((total, file) => total + new Blob([file.content]).size, 0);
+    if (session.codeFiles.size + candidates.length > MAX_PROJECT_FILES) {
+      showToast(`Projects are limited to ${MAX_PROJECT_FILES.toLocaleString()} text files.`);
+      return;
+    }
+    if (currentSize + incomingSize > MAX_PROJECT_SIZE) {
+      showToast("This import would exceed the 512 MB collaborative project limit.");
+      return;
+    }
+    let firstId = "";
+    session.doc.transact(() => {
+      for (const candidate of candidates) {
+        let path = sanitizeProjectPath(candidate.name);
+        if (existing.has(path.toLowerCase())) {
+          const dot = path.lastIndexOf(".");
+          const stem = dot > -1 ? path.slice(0, dot) : path;
+          const suffix = dot > -1 ? path.slice(dot) : "";
+          let copy = 2;
+          while (existing.has(`${stem}-${copy}${suffix}`.toLowerCase())) copy += 1;
+          path = `${stem}-${copy}${suffix}`;
+        }
+        existing.add(path.toLowerCase());
+        const id = crypto.randomUUID();
+        const text = new Y.Text();
+        if (candidate.content) text.insert(0, candidate.content);
+        session.codeFiles.set(id, text);
+        session.codeFileMeta.set(id, {
+          name: path,
+          language: candidate.language,
+          createdBy: localName,
+          createdAt: Date.now(),
+          size: new Blob([candidate.content]).size,
+        });
+        if (!firstId) firstId = id;
+      }
+    }, "project-import");
+    if (firstId) setActiveFileId(firstId);
+    showToast(`${candidates.length.toLocaleString()} project ${candidates.length === 1 ? "file" : "files"} imported`);
+  };
+
+  const importProjectFiles = async (list: FileList | File[]) => {
+    if (isReadOnly) return;
+    const candidates: ImportCandidate[] = [];
+    const warnings: string[] = [];
+    for (const file of Array.from(list)) {
+      if (file.name.toLowerCase().endsWith(".zip")) {
+        await importZip(file);
+        continue;
+      }
+      try {
+        candidates.push(await readTextProjectFile(file));
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : `${file.name} was skipped.`);
+      }
+    }
+    if (warnings.length) setProjectWarnings((current) => [...current, ...warnings].slice(-20));
+    await addProjectCandidates(candidates);
+  };
+
+  const importZip = async (file: File) => {
+    if (isReadOnly || !session) return;
+    try {
+      const result = await importProjectZip(file);
+      setProjectWarnings((current) => [...current, ...result.warnings].slice(-20));
+      await addProjectCandidates(result.files);
+      if (result.manifest) session.meta.set("projectManifest", {
+        ...result.manifest,
+        version: 1,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "The ZIP project could not be imported.");
+    }
+  };
+
+  const createProjectFile = (path?: string) => {
+    if (isReadOnly || !session) return;
+    const requested = path ?? window.prompt("File path", `src/untitled-${session.codeFiles.size + 1}.js`);
+    if (!requested) return;
+    const name = sanitizeProjectPath(requested);
+    const id = crypto.randomUUID();
+    session.codeFiles.set(id, new Y.Text());
+    session.codeFileMeta.set(id, {
+      name,
+      language: languageFromFilename(name),
+      createdBy: localName,
+      createdAt: Date.now(),
+      size: 0,
+    });
+    setActiveFileId(id);
+  };
+
+  const renameProjectFile = (id: string) => {
+    if (isReadOnly || !session) return;
+    const meta = session.codeFileMeta.get(id);
+    if (!meta) return;
+    const requested = window.prompt("Rename file or move it to another folder", meta.name);
+    if (!requested) return;
+    const name = sanitizeProjectPath(requested);
+    session.codeFileMeta.set(id, { ...meta, name, language: languageFromFilename(name) });
+  };
+
+  const duplicateProjectFile = (id: string) => {
+    if (isReadOnly || !session) return;
+    const meta = session.codeFileMeta.get(id);
+    const source = session.codeFiles.get(id);
+    if (!meta || !source) return;
+    const dot = meta.name.lastIndexOf(".");
+    const name = `${dot > -1 ? meta.name.slice(0, dot) : meta.name}-copy${dot > -1 ? meta.name.slice(dot) : ""}`;
+    const nextId = crypto.randomUUID();
+    const text = new Y.Text();
+    if (source.length) text.insert(0, source.toString());
+    session.codeFiles.set(nextId, text);
+    session.codeFileMeta.set(nextId, { ...meta, name, createdBy: localName, createdAt: Date.now() });
+    setActiveFileId(nextId);
+  };
+
+  const deleteProjectFile = (id: string) => {
+    if (!session) return;
+    if (isReadOnly || session.codeFiles.size <= 1) {
+      if (session.codeFiles.size <= 1) showToast("A project must keep at least one file.");
+      return;
+    }
+    const meta = session.codeFileMeta.get(id);
+    if (!window.confirm(`Delete ${meta?.name || "this file"} for every peer?`)) return;
+    session.codeFiles.delete(id);
+    session.codeFileMeta.delete(id);
+    if (activeFileId === id) setActiveFileId(session.codeFileMeta.keys().next().value || "main");
+  };
+
+  const runAnalysis = async () => {
+    setAnalyzing(true);
+    try {
+      setAnalysisReport(await analyzeCode(activeText?.toString() || "", activeMeta?.language || "text"));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Analysis failed.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const formatActiveFile = async () => {
+    if (isReadOnly || !session) {
+      showToast("This invite is read only.");
+      return;
+    }
+    try {
+      const formatted = await formatCode(activeText?.toString() || "", activeMeta?.language || "text", tabSize);
+      session.doc.transact(() => {
+        if (activeText?.length) activeText.delete(0, activeText.length);
+        if (formatted) activeText?.insert(0, formatted);
+      }, "format");
+      showToast("File formatted locally");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "This file could not be formatted.");
     }
   };
 
   const clearDocument = () => {
-    if (!session?.text.length || !window.confirm("Clear the collaborative editor for everyone?")) return;
-    session.text.delete(0, session.text.length);
+    if (!session || isReadOnly || !activeText?.length || !window.confirm("Clear the current collaborative file for everyone?")) return;
+    const removed = activeText.toString();
+    session.doc.transact(() => {
+      session.logs.push([{
+        id: crypto.randomUUID(), peerId: session.mesh.peerId, author: localName, color: localColor,
+        action: "delete", fromLine: 1, toLine: documentStats(removed).lines, text: removed, timestamp: Date.now(),
+      }]);
+      activeText.delete(0, activeText.length);
+    });
     showToast("Editor cleared");
   };
 
@@ -601,6 +1100,10 @@ export function App() {
     sessionStorage.setItem("sharecode:guest-name", nextName);
     localStorage.setItem("sharecode:font-size", String(fontSize));
     localStorage.setItem("sharecode:line-wrap", lineWrap ? "on" : "off");
+    localStorage.setItem("sharecode:editor-theme", editorTheme);
+    localStorage.setItem("sharecode:tab-size", String(tabSize));
+    localStorage.setItem("sharecode:keybinding", keyBinding);
+    localStorage.setItem("sharecode:minimap", minimap ? "on" : "off");
     setLocalName(nextName);
     setNameDraft(nextName);
     void session?.mesh.send({
@@ -649,6 +1152,78 @@ export function App() {
     }]);
     const overflow = session.messages.length - 500;
     if (overflow > 0) session.messages.delete(0, overflow);
+  };
+
+  const runCode = async (stdin: string) => {
+    if (!session) return;
+    const language = activeMeta?.language || "text";
+    const running = emptyRunResult(session.mesh.peerId, localName, language);
+    session.runner.set("result", running);
+    try {
+      let output: { stdout: string; stderr: string; durationMs: number };
+      if (canRunLocally(language)) {
+        output = await runLocalCode(activeText?.toString() || "", language);
+      } else {
+        if (!judgeEndpoint) throw new Error("Configure a trusted Judge0 CE endpoint first.");
+        if (!window.confirm(`Send the current ${language} code to ${judgeEndpoint} for execution?`)) {
+          session.runner.delete("result");
+          return;
+        }
+        output = await runWithJudge0(judgeEndpoint, language, activeText?.toString() || "", stdin);
+      }
+      session.runner.set("result", {
+        ...running,
+        ...output,
+        status: output.stderr ? "error" : "success",
+      } satisfies RunResult);
+    } catch (error) {
+      const timeout = error instanceof DOMException && error.name === "TimeoutError";
+      session.runner.set("result", {
+        ...running,
+        status: timeout ? "timeout" : "error",
+        stderr: error instanceof Error ? error.message : "Execution failed.",
+        durationMs: Date.now() - running.timestamp,
+      } satisfies RunResult);
+    }
+  };
+
+  const startCall = async (mode: "audio" | "video") => {
+    if (!session) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+        video: mode === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
+      });
+      setLocalStream(stream);
+      setCallMode(mode);
+      setMuted(false);
+      setCameraOff(false);
+      await session.mesh.setLocalMedia(stream);
+      await session.mesh.send({
+        type: "call-state",
+        peerId: session.mesh.peerId,
+        name: localName,
+        mode,
+        active: true,
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Camera or microphone access was not available.");
+    }
+  };
+
+  const leaveCall = () => {
+    localStream?.getTracks().forEach((track) => track.stop());
+    void session?.mesh.setLocalMedia();
+    void session?.mesh.send({
+      type: "call-state",
+      peerId: session.mesh.peerId,
+      name: localName,
+      mode: callMode,
+      active: false,
+    });
+    setLocalStream(undefined);
+    setRemoteStreams(new Map());
+    setCallMode(undefined);
   };
 
   const downloadFile = async (file: SharedFile) => {
@@ -700,18 +1275,34 @@ export function App() {
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setCommandOpen((value) => !value);
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (!session) return;
-        const name = String(session.meta.get("name") || "untitled");
-        const language = String(session.meta.get("language") || "text");
-        downloadText(session.text.toString(), documentFilename(name, language));
+        const name = activeMeta?.name || "untitled";
+        const language = activeMeta?.language || "text";
+        downloadText(activeText?.toString() || "", documentFilename(name, language));
         showToast("Document downloaded");
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [session, showToast]);
+  }, [activeMeta, activeText, session, showToast]);
+
+  const commands = useMemo<Command[]>(() => [
+    { id: "find", label: "Find and replace", detail: "Search text or regular expressions in the active file", shortcut: "Ctrl F", run: () => window.dispatchEvent(new CustomEvent("p2p-editor-command", { detail: "find" })) },
+    { id: "format", label: "Format active file", detail: "Use the browser worker formatter", shortcut: "Shift Alt F", run: () => void formatActiveFile() },
+    { id: "analyze", label: "Analyze active file", detail: "Run diagnostics, TODO, dependency and complexity checks", run: () => { setWorkbenchOpen(true); void runAnalysis(); } },
+    { id: "preview", label: "Open safe preview", detail: "Preview this project in an isolated sandbox", run: () => setWorkbenchOpen(true) },
+    { id: "new-file", label: "Create project file", detail: "Add a collaborative file or path", run: () => createProjectFile() },
+    { id: "project", label: "Toggle project explorer", detail: "Show the project file tree and manifest", run: () => setProjectOpen((value) => !value) },
+    { id: "share", label: "Invite a peer", detail: "Create editable or read-only invite links and QR codes", run: () => setShareOpen(true) },
+    { id: "settings", label: "Editor settings", detail: "Theme, font, tab width, minimap and keybindings", run: () => setSecurityOpen(true) },
+  ], [activeMeta, activeText, isReadOnly, session, tabSize]);
 
   if (!ready || !session) {
     return (
@@ -744,8 +1335,12 @@ export function App() {
     );
   }
 
-  const name = String(session.meta.get("name") || "untitled");
-  const language = String(session.meta.get("language") || "text");
+  const name = activeMeta?.name || "untitled";
+  const language = activeMeta?.language || "text";
+  const projectFiles = materializeProject(session.codeFiles, session.codeFileMeta);
+  const totalProjectSize = projectSize(projectFiles);
+  const manifest = session.meta.get("projectManifest") as ProjectManifest;
+  const activeProjectFile = projectFiles.find((file) => file.id === activeFileId) || projectFiles[0];
   const sharedFiles = [...session.files.values()].sort((a, b) => b.addedAt - a.addedAt);
   const allPresence: Presence[] = [
     { peerId: session.mesh.peerId, name: localName, color: localColor, lastSeen: Date.now(), local: true },
@@ -764,7 +1359,11 @@ export function App() {
           <input
             aria-label="Document name"
             value={name}
-            onChange={(event) => session.meta.set("name", event.target.value)}
+            readOnly={isReadOnly}
+            onChange={(event) => session.codeFileMeta.set(activeFileId, {
+              ...(activeMeta || { language: "text", createdBy: localName, createdAt: Date.now() }),
+              name: event.target.value,
+            })}
           />
         </div>
         <div className="topbar-actions">
@@ -785,10 +1384,31 @@ export function App() {
             {peerCount ? `${peerCount + 1} here` : "Only you"}
           </button>
           <div className="desktop-tools">
+            <button className="icon-button top-icon" onClick={() => setProjectOpen((value) => !value)} aria-label="Toggle project explorer" title="Project explorer">
+              <Icon name="folder" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setWorkbenchOpen((value) => !value)} aria-label="Open local developer workbench" title="Analyze & preview">
+              <Icon name="braces" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setCommandOpen(true)} aria-label="Open command palette" title="Command palette (Ctrl+Shift+P)">
+              <Icon name="search" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setCallOpen(true)} aria-label="Open audio or video call" title="Room call">
+              <Icon name="video" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setRunnerOpen((value) => !value)} aria-label="Open code runner" title="Run code">
+              <Icon name="play" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setActivityOpen((value) => !value)} aria-label="Open version logs" title="Version logs">
+              <Icon name="history" />
+            </button>
+            <button className="icon-button top-icon" onClick={() => setReviewOpen((value) => !value)} aria-label="Open code review discussions" title="Code review">
+              <Icon name="review" />
+            </button>
             <button className="icon-button top-icon" onClick={() => setChatOpen((value) => !value)} aria-label="Open group chat" title="Group chat">
               <Icon name="chat" />
             </button>
-            <button className="icon-button top-icon" onClick={() => importInput.current?.click()} aria-label="Open text file" title="Open text file">
+            <button className="icon-button top-icon" disabled={isReadOnly} onClick={() => importInput.current?.click()} aria-label="Open text file" title="Open text file">
               <Icon name="edit" />
             </button>
             <button className="icon-button top-icon" onClick={() => void copyDocument()} aria-label="Copy code" title="Copy code">
@@ -801,6 +1421,9 @@ export function App() {
           <button className="share-button" onClick={() => setShareOpen(true)}>
             <Icon name="share" />
             <span>Share</span>
+          </button>
+          <button className="icon-button top-icon" onClick={() => setPublishOpen(true)} aria-label="Publish code and Git integration" title="Publish code">
+            <Icon name="publish" />
           </button>
           <button
             className="icon-button top-icon"
@@ -848,10 +1471,37 @@ export function App() {
         onDrop={(event) => {
           event.preventDefault();
           setDragActive(false);
-          if (event.dataTransfer.files.length) void uploadFiles(event.dataTransfer.files);
+          if (!isReadOnly && event.dataTransfer.items.length) {
+            void droppedProjectFiles(event.dataTransfer.items).then(importProjectFiles);
+          }
         }}
       >
-        {(filesOpen || chatOpen) && <button className="files-scrim" aria-label="Close side panel" onClick={() => { setFilesOpen(false); setChatOpen(false); }} />}
+        {(filesOpen || projectOpen || chatOpen || activityOpen || reviewOpen || publishOpen || workbenchOpen) && <button className="files-scrim" aria-label="Close side panel" onClick={() => { setFilesOpen(false); setProjectOpen(false); setChatOpen(false); setActivityOpen(false); setReviewOpen(false); setPublishOpen(false); setWorkbenchOpen(false); }} />}
+        <ProjectPanel
+          open={projectOpen}
+          files={[...session.codeFileMeta.entries()]}
+          activeId={activeFileId}
+          manifest={manifest}
+          totalSize={totalProjectSize}
+          readOnly={isReadOnly}
+          warnings={projectWarnings}
+          otherTabs={otherTabs}
+          onClose={() => setProjectOpen(false)}
+          onSelect={setActiveFileId}
+          onCreate={createProjectFile}
+          onRename={renameProjectFile}
+          onDuplicate={duplicateProjectFile}
+          onDelete={deleteProjectFile}
+          onImportFiles={(files) => void importProjectFiles(files)}
+          onImportZip={(file) => void importZip(file)}
+          onDownloadZip={() => void downloadProjectZip(projectFiles, manifest)}
+          onManifestChange={(value) => session.meta.set("projectManifest", value)}
+          onSendToTab={() => {
+            if (!activeProjectFile) return;
+            session.tabs.sendSnippet(activeProjectFile.name, activeProjectFile.language, activeProjectFile.content);
+            showToast(`Sent ${activeProjectFile.name} to ${otherTabs} other ${otherTabs === 1 ? "tab" : "tabs"}`);
+          }}
+        />
         <FilesPanel
           open={filesOpen}
           files={sharedFiles}
@@ -863,44 +1513,98 @@ export function App() {
           onClose={() => setFilesOpen(false)}
         />
         <main className="editor-shell">
+          <CodeFileTabs
+            files={[...session.codeFileMeta.entries()]}
+            activeId={activeFileId}
+            readOnly={isReadOnly}
+            onSelect={setActiveFileId}
+            onAdd={() => {
+              createProjectFile();
+            }}
+            onRemove={deleteProjectFile}
+          />
           <div className="editor-toolbar">
-            <button className="mobile-files" onClick={() => setFilesOpen((value) => !value)}>
+            <button className="mobile-files" onClick={() => setProjectOpen((value) => !value)}>
               <Icon name="menu" />
-              Files
+              Project
             </button>
-            <button className="mobile-import" onClick={() => importInput.current?.click()}>
+            <button className="mobile-import" disabled={isReadOnly} onClick={() => importInput.current?.click()}>
               <Icon name="upload" />
               Import
             </button>
-            <label className="select-wrap">
-              <span className="sr-only">Syntax language</span>
-              <select value={language} onChange={(event) => session.meta.set("language", event.target.value)}>
-                {languages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
+            <LanguagePicker
+              value={language}
+              languages={languages}
+              disabled={isReadOnly}
+              onChange={(value) => session.codeFileMeta.set(activeFileId, {
+                ...(activeMeta || { name: "untitled", createdBy: localName, createdAt: Date.now() }),
+                language: value,
+              })}
+            />
             <span className="toolbar-separator" />
             <span className="privacy-state">
-              <Icon name={session.locked ? "lock" : "shield"} />
-              {session.locked ? "Password protected" : "WebRTC encrypted"}
+              <Icon name={isReadOnly ? "eye" : session.locked ? "lock" : "shield"} />
+              {isReadOnly ? "Read-only invite" : session.locked ? "Password protected" : "WebRTC encrypted"}
             </span>
+            <div className="mobile-editor-actions">
+              <button onClick={() => setRunnerOpen((value) => !value)} aria-label="Run code"><Icon name="play" /></button>
+              <button onClick={() => setActivityOpen(true)} aria-label="Version logs"><Icon name="history" /></button>
+              <button onClick={() => setReviewOpen(true)} aria-label="Code review"><Icon name="review" /></button>
+              <button onClick={() => setCallOpen(true)} aria-label="Room call"><Icon name="video" /></button>
+              <button onClick={() => setPublishOpen(true)} aria-label="Publish code"><Icon name="publish" /></button>
+            </div>
             <span className="toolbar-spacer" />
-            <button className="toolbar-action" onClick={() => importInput.current?.click()} title="Import a code or text file into the collaborative editor">
+            <button className="toolbar-action" disabled={isReadOnly} onClick={() => importInput.current?.click()} title="Import a code or text file into the collaborative editor">
               <Icon name="upload" /> Import code
+            </button>
+            <button className="toolbar-action" onClick={() => setWorkbenchOpen((value) => !value)} title="Analyze, format and safely preview">
+              <Icon name="braces" /> Workbench
             </button>
             <button className="toolbar-action" onClick={createNewRoom} title="Create a new room">
               <Icon name="new" /> New
             </button>
-            <button className="toolbar-action" onClick={clearDocument} disabled={!session.text.length} title="Clear editor">
+            <button className="toolbar-action" onClick={clearDocument} disabled={!activeText?.length} title="Clear editor">
               <Icon name="trash" /> Clear
             </button>
           </div>
           <CodeEditor
-            text={session.text}
+            text={activeText!}
             language={language}
             dark={dark}
             fontSize={fontSize}
             lineWrap={lineWrap}
-            largeDocument={session.text.length > LARGE_DOCUMENT_THRESHOLD}
+            themeMode={editorTheme}
+            tabSize={tabSize}
+            keyBinding={keyBinding}
+            minimap={minimap}
+            readOnly={isReadOnly}
+            largeDocument={(activeText?.length || 0) > LARGE_DOCUMENT_THRESHOLD}
+            logs={session.logs}
+            peerId={session.mesh.peerId}
+            author={localName}
+            authorColor={localColor}
+          />
+          {importProgress && (
+            <div className="import-progress" role="status" aria-live="polite">
+              <div>
+                <strong>Importing {importProgress.name}</strong>
+                <span>{importProgress.percent}% · {(importProgress.bytes / 1024 / 1024).toFixed(1)} MB streamed</span>
+              </div>
+              <progress max="100" value={importProgress.percent} />
+              <button className="text-button danger-text" onClick={() => { importCancelled.current = true; }}>Cancel</button>
+            </div>
+          )}
+          <RunnerPanel
+            open={runnerOpen}
+            language={language}
+            result={session.runner.get("result") as RunResult | undefined}
+            endpoint={judgeEndpoint}
+            onEndpointChange={(value) => {
+              setJudgeEndpoint(value);
+              localStorage.setItem("sharecode:judge0-endpoint", value);
+            }}
+            onRun={(stdin) => void runCode(stdin)}
+            onClose={() => setRunnerOpen(false)}
           />
           <footer className="editor-statusbar">
             <span className={`network-state ${online ? "online" : "offline"}`}>
@@ -910,10 +1614,31 @@ export function App() {
             <span>{stats.lines} {stats.lines === 1 ? "line" : "lines"}</span>
             <span>{stats.words} {stats.words === 1 ? "word" : "words"}</span>
             <span>{stats.characters} characters</span>
+            <span>{(totalProjectSize / 1024 / 1024).toFixed(2)} MB project</span>
             <span className="status-spacer" />
             <span>{recovery ? "Saved locally" : "Ephemeral"}</span>
+            {otherTabs > 0 && <span>{saveLeader ? "Primary save tab" : "Synced tab"}</span>}
           </footer>
         </main>
+        {activeProjectFile && (
+          <WorkbenchPanel
+            open={workbenchOpen}
+            files={projectFiles}
+            activeFile={activeProjectFile}
+            report={analysisReport}
+            analyzing={analyzing}
+            onAnalyze={() => void runAnalysis()}
+            onFormat={() => void formatActiveFile()}
+            onApplyText={(value) => {
+              if (isReadOnly || !activeText) return;
+              session.doc.transact(() => {
+                if (activeText.length) activeText.delete(0, activeText.length);
+                if (value) activeText.insert(0, value);
+              }, "utility");
+            }}
+            onClose={() => setWorkbenchOpen(false)}
+          />
+        )}
         <ChatPanel
           open={chatOpen}
           messages={session.messages.toArray()}
@@ -921,6 +1646,85 @@ export function App() {
           localPeerId={session.mesh.peerId}
           onSend={sendChatMessage}
           onClose={() => setChatOpen(false)}
+        />
+        <ActivityPanel
+          open={activityOpen}
+          logs={session.logs.toArray()}
+          onClose={() => setActivityOpen(false)}
+          onClear={() => {
+            if (window.confirm("Clear the shared version log for every peer?")) {
+              session.logs.delete(0, session.logs.length);
+            }
+          }}
+        />
+        <ReviewPanel
+          open={reviewOpen}
+          entries={session.reviews.toArray()}
+          peers={allPresence}
+          onClose={() => setReviewOpen(false)}
+          onAdd={(body, kind, lineNumber, parent) => {
+            const threadId = parent?.threadId || crypto.randomUUID();
+            session.reviews.push([{
+              id: crypto.randomUUID(),
+              threadId,
+              parentId: parent?.id,
+              kind,
+              author: localName,
+              peerId: session.mesh.peerId,
+              body,
+              line: lineNumber,
+              createdAt: Date.now(),
+            }]);
+          }}
+          onReact={(target, emoji) => session.reviews.push([{
+            id: crypto.randomUUID(),
+            threadId: target.threadId,
+            parentId: target.id,
+            kind: "reaction",
+            author: localName,
+            peerId: session.mesh.peerId,
+            body: emoji,
+            createdAt: Date.now(),
+          }])}
+        />
+        <PublishPanel
+          open={publishOpen}
+          files={[...session.codeFiles.entries()].map(([id, content]) => ({
+            name: session.codeFileMeta.get(id)?.name || `${id}.txt`,
+            content: content.toString(),
+          }))}
+          description={session.description.toString()}
+          visibility={(session.meta.get("visibility") as "public" | "unlisted" | "private") || "private"}
+          source={session.meta.get("source") as { url: string; branch: string; commit: string } | undefined}
+          onClose={() => setPublishOpen(false)}
+          onDescriptionChange={(value) => {
+            session.doc.transact(() => {
+              if (session.description.length) session.description.delete(0, session.description.length);
+              if (value) session.description.insert(0, value);
+            });
+          }}
+          onVisibilityChange={(value) => session.meta.set("visibility", value)}
+          onSourceChange={(source) => session.meta.set("source", source)}
+          onImport={(incoming) => {
+            let first = "";
+            session.doc.transact(() => {
+              for (const file of incoming) {
+                const id = crypto.randomUUID();
+                const content = new Y.Text();
+                content.insert(0, file.content);
+                session.codeFiles.set(id, content);
+                session.codeFileMeta.set(id, {
+                  name: file.name,
+                  language: languageFromFilename(file.name),
+                  createdBy: localName,
+                  createdAt: Date.now(),
+                });
+                if (!first) first = id;
+              }
+            });
+            if (first) setActiveFileId(first);
+            showToast(`${incoming.length} repository files imported`);
+          }}
         />
         {dragActive && (
           <div className="drop-overlay">
@@ -932,12 +1736,36 @@ export function App() {
       </div>
 
       <nav className="mobile-nav" aria-label="Room actions">
-        <button onClick={() => { setChatOpen(false); setFilesOpen(true); }}><Icon name="folder" /><span>Files</span></button>
+        <button onClick={() => { setChatOpen(false); setProjectOpen(true); }}><Icon name="folder" /><span>Project</span></button>
         <button onClick={() => { setFilesOpen(false); setChatOpen(true); }}><Icon name="chat" /><span>Chat</span></button>
         <button className="mobile-share" onClick={() => setShareOpen(true)}><Icon name="share" /><span>Share</span></button>
         <button onClick={exportDocument}><Icon name="download" /><span>Save</span></button>
         <button onClick={() => setSecurityOpen(true)}><Icon name="settings" /><span>Settings</span></button>
+        <button onClick={() => setCallOpen(true)}><Icon name="video" /><span>Call</span></button>
       </nav>
+
+      <CallPanel
+        open={callOpen}
+        localStream={localStream}
+        remoteStreams={remoteStreams}
+        peers={allPresence}
+        mode={callMode}
+        muted={muted}
+        cameraOff={cameraOff}
+        onStart={(mode) => void startCall(mode)}
+        onToggleMute={() => {
+          const next = !muted;
+          localStream?.getAudioTracks().forEach((track) => { track.enabled = !next; });
+          setMuted(next);
+        }}
+        onToggleCamera={() => {
+          const next = !cameraOff;
+          localStream?.getVideoTracks().forEach((track) => { track.enabled = !next; });
+          setCameraOff(next);
+        }}
+        onLeave={leaveCall}
+        onClose={() => setCallOpen(false)}
+      />
 
       <ShareDialog
         open={shareOpen}
@@ -949,7 +1777,7 @@ export function App() {
         busy={shareBusy}
         error={shareError}
         peerCount={peerCount}
-        onCreateInvite={() => void createInvite()}
+        onCreateInvite={(access) => void createInvite(access)}
         onAcceptAnswer={(answer) => void acceptAnswer(answer)}
         onJoin={() => void joinInvite()}
       />
@@ -1035,6 +1863,34 @@ export function App() {
                 >
                   <span />
                 </button>
+              </div>
+              <div className="field-group">
+                <label htmlFor="editor-theme">Editor theme</label>
+                <select id="editor-theme" value={editorTheme} onChange={(event) => setEditorTheme(event.target.value as typeof editorTheme)}>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                  <option value="contrast">High contrast</option>
+                </select>
+              </div>
+              <div className="field-group">
+                <label htmlFor="tab-size">Tab size</label>
+                <select id="tab-size" value={tabSize} onChange={(event) => setTabSize(Number(event.target.value))}>
+                  <option value="2">2 spaces</option>
+                  <option value="4">4 spaces</option>
+                  <option value="8">8 spaces</option>
+                </select>
+              </div>
+              <div className="field-group">
+                <label htmlFor="keybinding">Keybindings</label>
+                <select id="keybinding" value={keyBinding} onChange={(event) => setKeyBinding(event.target.value as typeof keyBinding)}>
+                  <option value="standard">Standard</option>
+                  <option value="vim">Vim</option>
+                  <option value="emacs">Emacs</option>
+                </select>
+              </div>
+              <div className="setting-row compact">
+                <div><strong>Editor minimap</strong><span>Hide automatically for very large files.</span></div>
+                <button className={`toggle ${minimap ? "on" : ""}`} role="switch" aria-checked={minimap} onClick={() => setMinimap((value) => !value)}><span /></button>
               </div>
             </div>
           </div>
@@ -1130,6 +1986,7 @@ export function App() {
         </div>
       </Dialog>
 
+      <CommandPalette open={commandOpen} commands={commands} onClose={() => setCommandOpen(false)} />
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://p2p-share.github.io/sitemap.xml
