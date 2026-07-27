@@ -845,7 +845,8 @@ export function App() {
             if (sink.writable) {
               await sink.writable.close();
             } else {
-              await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
+              const finishedBlob = await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
+              fileSources.current.set(sink.file.id, new File([finishedBlob], sink.file.name, { type: sink.file.type }));
               setLocalFiles((current) => new Set(current).add(sink.file.id));
               const currentMeta = session.files.get(sink.file.id);
               if (currentMeta) {
@@ -1119,6 +1120,7 @@ export function App() {
       }]);
       try {
         fileSources.current.set(id, file);
+        void putFile(session.roomId, id, file).catch(() => undefined);
         session.files.set(id, {
           id,
           name: file.name,
@@ -2636,7 +2638,7 @@ async function sendFile(
   setTransfers: React.Dispatch<React.SetStateAction<Transfer[]>>,
   source?: Blob,
 ) {
-  const file = source || await getFile(session.roomId, fileId);
+  const file = source || fileSources.current.get(fileId) || await getFile(session.roomId, fileId);
   const meta = session.files.get(fileId);
   if (!file || !meta) {
     await session.mesh.send({ type: "file-error", target, transferId, message: "File is not available." });
