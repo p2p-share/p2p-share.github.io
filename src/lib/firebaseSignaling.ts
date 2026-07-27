@@ -36,6 +36,9 @@ type Signal = {
 
 const SIGNAL_TTL_MS = 30 * 60 * 1000;
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000;
+const PARTICIPANT_STALE_MS = 90_000;
+const PARTICIPANT_CLEANUP_MS = 10 * 60_000;
+const OVERLAY_HEALTH_MS = 8_000;
 export type FirebaseRoomSecurity = {
   locked: boolean;
   salt?: string;
@@ -61,11 +64,15 @@ export async function getFirebaseRoomSecurity(roomId: string): Promise<FirebaseR
 export class FirebaseSignaling {
   private unsubscribers: Unsubscribe[] = [];
   private heartbeat?: number;
+  private healthCheck?: number;
   private closed = false;
   private connecting?: Promise<void>;
   private reconnecting?: Promise<void>;
   private listenersAttached = false;
   private offerTargets = new Set<string>();
+  private desiredPeers = new Set<string>();
+  private reconcileConnections?: () => void;
+  private announcePresence?: () => Promise<void>;
 
   constructor(
     private readonly roomId: string,
@@ -122,6 +129,7 @@ export class FirebaseSignaling {
       joinedAt: serverTimestamp(),
       lastSeen: serverTimestamp(),
     }, { merge: true });
+    this.announcePresence = announce;
     await announce();
 
     const participants = collection(roomRef, "participants");
@@ -131,21 +139,36 @@ export class FirebaseSignaling {
       query(participants, orderBy("ring", "asc"), limit(DISCOVERY_WINDOW)),
       query(participants, orderBy("ring", "desc"), limit(DISCOVERY_WINDOW)),
     ];
-    const queryCandidates = discoveryQueries.map(() => new Map<string, number>());
+    const queryCandidates = discoveryQueries.map(() => new Map<string, { ring: number; lastSeen: number }>());
     const reconcile = () => {
       const candidates = new Map<string, number>();
-      queryCandidates.forEach((items) => items.forEach((ring, peerId) => candidates.set(peerId, ring)));
+      const staleBefore = Date.now() - PARTICIPANT_STALE_MS;
+      queryCandidates.forEach((items) => items.forEach((participant, peerId) => {
+        if (participant.lastSeen >= staleBefore) candidates.set(peerId, participant.ring);
+      }));
       const nearest = selectOverlayNeighbors(this.mesh.peerId, candidates, OVERLAY_NEIGHBORS);
+      this.desiredPeers = new Set(nearest);
       for (const peerId of nearest) {
         if (this.mesh.peerId < peerId && !this.mesh.hasPeer(peerId)) void this.createOffer(peerId);
       }
     };
+    this.reconcileConnections = reconcile;
     discoveryQueries.forEach((discoveryQuery, index) => {
       this.unsubscribers.push(onSnapshot(discoveryQuery, (snapshot) => {
-        const next = new Map<string, number>();
+        const next = new Map<string, { ring: number; lastSeen: number }>();
         snapshot.docs.forEach((participant) => {
-          const ring = participant.data().ring;
-          if (typeof ring === "number") next.set(participant.id, ring);
+          const data = participant.data();
+          const ring = data.ring;
+          const lastSeen = typeof data.lastSeen?.toMillis === "function"
+            ? data.lastSeen.toMillis()
+            : Date.now();
+          if (typeof ring === "number") next.set(participant.id, { ring, lastSeen });
+          if (
+            participant.id !== this.mesh.peerId
+            && lastSeen < Date.now() - PARTICIPANT_CLEANUP_MS
+          ) {
+            void deleteDoc(participant.ref).catch(() => undefined);
+          }
         });
         queryCandidates[index] = next;
         reconcile();
@@ -164,6 +187,7 @@ export class FirebaseSignaling {
     }, (error) => this.mesh.reportError(`Automatic signaling failed: ${error.message}`)));
 
     this.heartbeat = window.setInterval(() => void announce(), 30_000);
+    this.healthCheck = window.setInterval(reconcile, OVERLAY_HEALTH_MS);
     window.addEventListener("pagehide", this.handlePageHide);
   }
 
@@ -183,26 +207,33 @@ export class FirebaseSignaling {
   private attachReconnectListeners() {
     if (this.listenersAttached) return;
     this.listenersAttached = true;
-    window.addEventListener("online", this.handleReconnect);
-    window.addEventListener("pageshow", this.handleReconnect);
+    window.addEventListener("online", this.handleRefresh);
+    window.addEventListener("pageshow", this.handleRefresh);
     document.addEventListener("visibilitychange", this.handleVisibility);
   }
 
-  private handleReconnect = () => {
-    void this.reconnect().catch((error) => {
-      this.mesh.reportError(error instanceof Error ? error.message : "Could not reconnect to the room.");
+  private handleRefresh = () => {
+    if (this.closed) return;
+    void this.announcePresence?.().catch((error) => {
+      this.mesh.reportError(error instanceof Error ? error.message : "Could not refresh room presence.");
     });
+    this.reconcileConnections?.();
   };
 
   private handleVisibility = () => {
-    if (document.visibilityState === "visible") this.handleReconnect();
+    if (document.visibilityState === "visible") this.handleRefresh();
   };
 
   private clearRealtimeState() {
     this.unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe());
     if (this.heartbeat) window.clearInterval(this.heartbeat);
+    if (this.healthCheck) window.clearInterval(this.healthCheck);
     this.heartbeat = undefined;
+    this.healthCheck = undefined;
     this.offerTargets.clear();
+    this.desiredPeers.clear();
+    this.reconcileConnections = undefined;
+    this.announcePresence = undefined;
     window.removeEventListener("pagehide", this.handlePageHide);
   }
 
@@ -223,6 +254,18 @@ export class FirebaseSignaling {
     } finally {
       this.offerTargets.delete(targetPeerId);
     }
+  }
+
+  repairPeer(targetPeerId?: string) {
+    if (
+      targetPeerId
+      && this.desiredPeers.has(targetPeerId)
+      && !this.mesh.hasPeer(targetPeerId)
+    ) {
+      void this.createOffer(targetPeerId);
+      return;
+    }
+    this.reconcileConnections?.();
   }
 
   private async consumeSignal(reference: ReturnType<typeof doc>, signal: Signal) {
@@ -262,8 +305,8 @@ export class FirebaseSignaling {
     });
   }
 
-  private handlePageHide = () => {
-    void this.removeParticipant();
+  private handlePageHide = (event: PageTransitionEvent) => {
+    if (!event.persisted) void this.removeParticipant();
   };
 
   private removeParticipant() {
@@ -288,8 +331,8 @@ export class FirebaseSignaling {
   disconnect() {
     this.closed = true;
     this.clearRealtimeState();
-    window.removeEventListener("online", this.handleReconnect);
-    window.removeEventListener("pageshow", this.handleReconnect);
+    window.removeEventListener("online", this.handleRefresh);
+    window.removeEventListener("pageshow", this.handleRefresh);
     document.removeEventListener("visibilitychange", this.handleVisibility);
     this.listenersAttached = false;
     void this.removeParticipant();

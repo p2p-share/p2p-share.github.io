@@ -145,9 +145,27 @@ async function verifyAutomaticSignaling() {
     ));
     throw new Error(`Automatic signaling did not connect. Statuses: ${JSON.stringify(statuses)}. Errors: ${errors.join(" | ")}`);
   }
+  await pages[2].reload({ waitUntil: "domcontentloaded" });
+  const reloadedOnboarding = pages[2].getByLabel("Your display name");
+  await reloadedOnboarding.or(pages[2].getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
+  if (await reloadedOnboarding.isVisible()) {
+    await reloadedOnboarding.fill("Firebase peer recovered");
+    await pages[2].getByRole("button", { name: "Enter workspace" }).click();
+  }
+  await pages[2].getByLabel("Collaborative code editor").waitFor();
+  try {
+    await Promise.all(pages.map((page) =>
+      page.locator('[aria-label="2 direct peer routes"]').waitFor({ state: "attached", timeout: 60_000 }),
+    ));
+  } catch {
+    const statuses = await Promise.all(pages.map((page) =>
+      page.locator(".presence-stack").getAttribute("aria-label"),
+    ));
+    throw new Error(`Automatic signaling did not recover after peer reload. Statuses: ${JSON.stringify(statuses)}. Errors: ${errors.join(" | ")}`);
+  }
   await Promise.all(contexts.map((context) => context.close()));
   if (errors.length) throw new Error(`automatic signaling browser errors:\n${errors.join("\n")}`);
-  return { label: "firebase-signaling", peers: 3, errors: [] };
+  return { label: "firebase-signaling", peers: 3, reloadRecovered: true, errors: [] };
 }
 
 async function verifyPasswordRoom() {

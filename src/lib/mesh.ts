@@ -1,6 +1,7 @@
 import { decryptBytes, encryptBytes } from "./crypto";
 import { decodeJson, encodeJson } from "./encoding";
 import { recommendedTransferChunkSize } from "./fileTransfer";
+import { shouldAcceptIncomingOffer } from "./overlay";
 import {
   decodeSignal,
   encodeSignal,
@@ -30,6 +31,8 @@ type Link = {
   channel?: RTCDataChannel;
   remotePeerId?: string;
   remoteStream?: MediaStream;
+  opened?: boolean;
+  lostNotified?: boolean;
 };
 
 type PendingMessage = {
@@ -49,13 +52,14 @@ type MeshEvents = {
   peers: CustomEvent<number>;
   error: CustomEvent<string>;
   media: CustomEvent<{ peerId: string; stream: MediaStream }>;
-  reconnect: CustomEvent<void>;
+  reconnect: CustomEvent<{ peerId?: string }>;
 };
 
 const MAX_FRAGMENT = 24 * 1024;
 const HIGH_WATER = 8 * 1024 * 1024;
 const LOW_WATER = 2 * 1024 * 1024;
 const BINARY_MAGIC = new Uint8Array([0x50, 0x32, 0x50, 0x46]);
+const AUTOMATIC_OFFER_TIMEOUT_MS = 30_000;
 export const MAX_DIRECT_PEERS = 16;
 
 export class PeerMesh extends EventTarget {
@@ -66,6 +70,8 @@ export class PeerMesh extends EventTarget {
   private pending = new Map<string, PendingMessage>();
   private key?: CryptoKey;
   private localStream?: MediaStream;
+  private offerTimeouts = new Map<string, number>();
+  private closing = false;
 
   constructor(
     readonly roomId: string,
@@ -105,6 +111,23 @@ export class PeerMesh extends EventTarget {
     );
   }
 
+  private prepareForIncomingOffer(inviter: string) {
+    const connected = this.isPeerConnected(inviter);
+    const competing = [...this.links.values(), ...this.offers.values()].filter(
+      (link) => link.remotePeerId === inviter && link.pc.connectionState !== "closed",
+    );
+    if (!shouldAcceptIncomingOffer(this.peerId, inviter, connected, competing.length > 0)) {
+      return false;
+    }
+    // Both peers can notice a broken route at the same time. The lower peer ID
+    // remains the offerer, while the higher peer drops its competing attempt.
+    for (const link of competing) {
+      link.pc.close();
+      this.removeLink(link, false);
+    }
+    return true;
+  }
+
   isPeerConnected(peerId: string) {
     return [...this.links.values()].some(
       (link) => link.remotePeerId === peerId && link.channel?.readyState === "open",
@@ -125,7 +148,13 @@ export class PeerMesh extends EventTarget {
 
   private createConnection(id: string): Link {
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: [{
+        urls: [
+          "stun:stun.l.google.com:19302",
+          "stun:stun1.l.google.com:19302",
+        ],
+      }],
+      iceCandidatePoolSize: 4,
     });
     const link: Link = { id, pc };
     const audio = pc.addTransceiver("audio", { direction: "sendrecv" });
@@ -149,26 +178,22 @@ export class PeerMesh extends EventTarget {
     };
     pc.onconnectionstatechange = () => {
       if (["failed", "closed"].includes(pc.connectionState)) {
-        this.links.delete(id);
-        this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
-        if (pc.connectionState === "failed") {
+        this.removeLink(link, pc.connectionState === "failed");
+        if (pc.connectionState === "failed" && !this.closing) {
           this.dispatchEvent(
             new CustomEvent("error", {
               detail:
                 "Direct connection failed. The peers may be behind restrictive NAT or firewall rules.",
             }),
           );
-          this.dispatchEvent(new CustomEvent("reconnect"));
         }
       }
       if (pc.connectionState === "disconnected") {
         window.setTimeout(() => {
           if (pc.connectionState !== "disconnected") return;
           pc.close();
-          this.links.delete(id);
-          this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
-          this.dispatchEvent(new CustomEvent("reconnect"));
-        }, 10_000);
+          this.removeLink(link, true);
+        }, 15_000);
       }
     };
     pc.ondatachannel = (event) => this.attachChannel(link, event.channel);
@@ -180,7 +205,10 @@ export class PeerMesh extends EventTarget {
     channel.binaryType = "arraybuffer";
     channel.bufferedAmountLowThreshold = LOW_WATER;
     channel.onopen = () => {
+      link.opened = true;
+      link.lostNotified = false;
       this.links.set(link.id, link);
+      this.clearOfferTimeout(link.id);
       void this.sendEnvelopeOnLink(link, {
         id: crypto.randomUUID(),
         origin: this.peerId,
@@ -195,6 +223,42 @@ export class PeerMesh extends EventTarget {
     };
     channel.onerror = () =>
       this.dispatchEvent(new CustomEvent("error", { detail: "A peer connection encountered an error." }));
+    channel.onclose = () => this.removeLink(link, true);
+  }
+
+  private removeLink(link: Link, repair: boolean) {
+    const removedLink = this.links.delete(link.id);
+    const removedOffer = this.offers.delete(link.id);
+    const removed = removedLink || removedOffer;
+    this.clearOfferTimeout(link.id);
+    if (removed) this.dispatchEvent(new CustomEvent("peers", { detail: this.peerCount }));
+    if (
+      repair
+      && !this.closing
+      && link.opened
+      && !link.lostNotified
+      && link.remotePeerId
+    ) {
+      link.lostNotified = true;
+      this.dispatchEvent(new CustomEvent("reconnect", {
+        detail: { peerId: link.remotePeerId },
+      }));
+    }
+  }
+
+  private trackAutomaticOffer(link: Link) {
+    this.clearOfferTimeout(link.id);
+    this.offerTimeouts.set(link.id, window.setTimeout(() => {
+      if (!this.offers.has(link.id)) return;
+      link.pc.close();
+      this.removeLink(link, false);
+    }, AUTOMATIC_OFFER_TIMEOUT_MS));
+  }
+
+  private clearOfferTimeout(offerId: string) {
+    const timeout = this.offerTimeouts.get(offerId);
+    if (timeout) window.clearTimeout(timeout);
+    this.offerTimeouts.delete(offerId);
   }
 
   async createInvite(locked: boolean, salt?: string, access: "edit" | "read" = "edit"): Promise<string> {
@@ -231,6 +295,7 @@ export class PeerMesh extends EventTarget {
     await link.pc.setLocalDescription(await link.pc.createOffer());
     await waitForIceGathering(link.pc);
     this.offers.set(offerId, link);
+    this.trackAutomaticOffer(link);
     await this.send({
       type: "peer-offer",
       target,
@@ -251,6 +316,7 @@ export class PeerMesh extends EventTarget {
     await link.pc.setLocalDescription(await link.pc.createOffer());
     await waitForIceGathering(link.pc);
     this.offers.set(offerId, link);
+    this.trackAutomaticOffer(link);
     const description = link.pc.localDescription!;
     return {
       offerId,
@@ -263,7 +329,7 @@ export class PeerMesh extends EventTarget {
     inviter: string,
     description: RTCSessionDescriptionInit,
   ) {
-    if (this.hasPeer(inviter)) return;
+    if (!this.prepareForIncomingOffer(inviter)) return;
     if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const link = this.createConnection(offerId);
     link.remotePeerId = inviter;
@@ -296,7 +362,7 @@ export class PeerMesh extends EventTarget {
     inviter: string,
     description: RTCSessionDescriptionInit,
   ) {
-    if (this.hasPeer(inviter)) return;
+    if (!this.prepareForIncomingOffer(inviter)) return;
     if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const link = this.createConnection(offerId);
     link.remotePeerId = inviter;
@@ -323,6 +389,7 @@ export class PeerMesh extends EventTarget {
     await link.pc.setRemoteDescription(description);
     this.links.set(link.id, link);
     this.offers.delete(offerId);
+    this.clearOfferTimeout(offerId);
   }
 
   async setLocalMedia(stream?: MediaStream) {
@@ -369,6 +436,7 @@ export class PeerMesh extends EventTarget {
     await link.pc.setRemoteDescription(signal.description);
     this.links.set(link.id, link);
     this.offers.delete(signal.offerId);
+    this.clearOfferTimeout(signal.offerId);
   }
 
   async send(body: Record<string, unknown>): Promise<void> {
@@ -486,13 +554,44 @@ export class PeerMesh extends EventTarget {
 
   private async waitForCapacity(channel: RTCDataChannel) {
     if (channel.bufferedAmount > HIGH_WATER) {
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        let timer: number | undefined;
+        let pollTimer: number | undefined;
         const done = () => {
-          channel.removeEventListener("bufferedamountlow", done);
+          cleanup();
           resolve();
         };
+        const closed = () => {
+          cleanup();
+          reject(new Error("The peer connection closed while data was buffered."));
+        };
+        const checkCapacity = () => {
+          if (channel.bufferedAmount <= LOW_WATER) {
+            done();
+          }
+        };
+        const cleanup = () => {
+          if (timer) window.clearTimeout(timer);
+          if (pollTimer) window.clearInterval(pollTimer);
+          channel.removeEventListener("bufferedamountlow", done);
+          channel.removeEventListener("close", closed);
+          channel.removeEventListener("error", closed);
+        };
         channel.addEventListener("bufferedamountlow", done, { once: true });
+        channel.addEventListener("close", closed, { once: true });
+        channel.addEventListener("error", closed, { once: true });
+        pollTimer = window.setInterval(checkCapacity, 250);
+        timer = window.setTimeout(() => {
+          if (channel.bufferedAmount <= HIGH_WATER) {
+            done();
+          } else {
+            closed();
+          }
+        }, 15_000);
       });
+    }
+    if (channel.readyState !== "open") {
+      throw new Error("The peer connection closed before data could be sent.");
     }
   }
 
@@ -511,7 +610,7 @@ export class PeerMesh extends EventTarget {
       if (link.remotePeerId && envelope.origin !== link.remotePeerId) {
         throw new Error("Binary packet origin did not match its direct peer.");
       }
-      envelope.body.data = packet.slice(8 + headerLength);
+      envelope.body.data = packet.subarray(8 + headerLength);
       this.dispatchEvent(new CustomEvent("message", { detail: envelope }));
     } catch (error) {
       this.dispatchEvent(new CustomEvent("error", {
@@ -565,20 +664,29 @@ export class PeerMesh extends EventTarget {
   }
 
   disconnect() {
+    this.closing = true;
     for (const link of this.links.values()) link.pc.close();
     for (const link of this.offers.values()) link.pc.close();
     this.links.clear();
     this.offers.clear();
+    this.offerTimeouts.forEach((timeout) => window.clearTimeout(timeout));
+    this.offerTimeouts.clear();
     this.dispatchEvent(new CustomEvent("peers", { detail: 0 }));
   }
 
   restartConnections() {
+    this.closing = true;
     for (const link of this.links.values()) link.pc.close();
     for (const link of this.offers.values()) link.pc.close();
     this.links.clear();
     this.offers.clear();
+    this.offerTimeouts.forEach((timeout) => window.clearTimeout(timeout));
+    this.offerTimeouts.clear();
     this.pending.clear();
     this.dispatchEvent(new CustomEvent("peers", { detail: 0 }));
+    window.setTimeout(() => {
+      this.closing = false;
+    }, 1000);
   }
 }
 

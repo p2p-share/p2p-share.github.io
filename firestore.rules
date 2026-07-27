@@ -28,7 +28,10 @@ service cloud.firestore {
           && resource.data.uid == request.auth.uid
           && request.resource.data.uid == resource.data.uid;
         allow delete: if signedIn()
-          && resource.data.uid == request.auth.uid;
+          && (
+            resource.data.uid == request.auth.uid
+            || resource.data.lastSeen < request.time - duration.value(10, 'm')
+          );
       }
 
       match /signals/{signalId} {

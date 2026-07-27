@@ -4,6 +4,7 @@ import {
   OVERLAY_NEIGHBORS,
   ringPosition,
   selectOverlayNeighbors,
+  shouldAcceptIncomingOffer,
 } from "../src/lib/overlay";
 
 describe("large-room peer overlay", () => {
@@ -12,6 +13,8 @@ describe("large-room peer overlay", () => {
       const peerId = `peer-${index.toString().padStart(5, "0")}`;
       return [peerId, ringPosition(peerId)] as const;
     }).sort((left, right) => left[1] - right[1]);
+    const peerIndexes = new Map(peers.map(([peerId], index) => [peerId, index]));
+    const routes = peers.map(() => new Set<number>());
 
     for (let index = 0; index < peers.length; index += 1) {
       const candidates: Array<readonly [string, number]> = [];
@@ -22,7 +25,22 @@ describe("large-room peer overlay", () => {
       expect(selected).toHaveLength(OVERLAY_NEIGHBORS);
       expect(new Set(selected).size).toBe(selected.length);
       expect(selected).not.toContain(peers[index][0]);
+      selected.forEach((peerId) => {
+        const target = peerIndexes.get(peerId)!;
+        routes[index].add(target);
+        routes[target].add(index);
+      });
     }
+    const reached = new Set([0]);
+    const queue = [0];
+    while (queue.length) {
+      for (const neighbor of routes[queue.shift()!]) {
+        if (reached.has(neighbor)) continue;
+        reached.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+    expect(reached.size).toBe(peers.length);
   });
 
   it("selects the same neighbors regardless of query result order", () => {
@@ -33,5 +51,12 @@ describe("large-room peer overlay", () => {
     });
     expect(selectOverlayNeighbors(own, candidates))
       .toEqual(selectOverlayNeighbors(own, [...candidates].reverse()));
+  });
+
+  it("resolves simultaneous repair offers without duplicate routes or deadlock", () => {
+    expect(shouldAcceptIncomingOffer("peer-a", "peer-b", false, true)).toBe(false);
+    expect(shouldAcceptIncomingOffer("peer-b", "peer-a", false, true)).toBe(true);
+    expect(shouldAcceptIncomingOffer("peer-a", "peer-b", false, false)).toBe(true);
+    expect(shouldAcceptIncomingOffer("peer-b", "peer-a", true, false)).toBe(false);
   });
 });

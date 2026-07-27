@@ -773,8 +773,13 @@ export function App() {
           const transferId = String(body.transferId);
           const sink = sinks.current.get(transferId);
           if (!sink) return;
-          const encrypted = body.data;
-          if (!(encrypted instanceof Uint8Array)) throw new Error("Received an invalid binary file chunk.");
+          const rawData = body.data;
+          const encrypted = rawData instanceof Uint8Array
+            ? rawData
+            : rawData instanceof ArrayBuffer
+            ? new Uint8Array(rawData)
+            : null;
+          if (!encrypted) throw new Error("Received an invalid binary file chunk.");
           const index = Number(body.index);
           const chunkHash = String(body.hash);
           sink.chain = sink.chain.then(async () => {
@@ -943,12 +948,9 @@ export function App() {
     const offMedia = session.mesh.on("media", (event) => {
       setRemoteStreams((current) => new Map(current).set(event.detail.peerId, event.detail.stream));
     });
-    const offReconnect = session.mesh.on("reconnect", () => {
-      void session.signaling.reconnect().then(() => {
-        showToast("Reconnected to the room");
-      }).catch((error) => {
-        showToast(error instanceof Error ? error.message : "Room reconnection failed.");
-      });
+    const offReconnect = session.mesh.on("reconnect", (event) => {
+      session.signaling.repairPeer(event.detail.peerId);
+      showToast("Repairing a peer route…");
     });
     const heartbeat = window.setInterval(() => {
       sendPresence();
