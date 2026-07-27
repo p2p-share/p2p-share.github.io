@@ -97,6 +97,7 @@ type IncomingSink = {
   expectedChunks?: number;
   lastProgressAt: number;
   startedAt: number;
+  bufferedChunks?: Uint8Array[];
 };
 
 type InstallPromptEvent = Event & {
@@ -800,8 +801,12 @@ export function App() {
             if (sink.receivedBytes + bytes.length > sink.file.size) {
               throw new Error("The incoming file exceeded its advertised size.");
             }
-            if (sink.writable) await sink.writable.write(bytes);
-            else await putChunk(session.roomId, transferId, index, bytes);
+            if (sink.writable) {
+              await sink.writable.write(bytes);
+            } else {
+              if (!sink.bufferedChunks) sink.bufferedChunks = [];
+              sink.bufferedChunks.push(bytes);
+            }
             sink.chunkDigests.push(chunkHash);
             sink.expectedIndex += 1;
             sink.receivedBytes += bytes.length;
@@ -845,7 +850,13 @@ export function App() {
             if (sink.writable) {
               await sink.writable.close();
             } else {
-              const finishedBlob = await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
+              let finishedBlob: Blob;
+              if (sink.bufferedChunks && sink.bufferedChunks.length > 0) {
+                finishedBlob = new Blob(sink.bufferedChunks, { type: sink.file.type });
+                void putFile(session.roomId, sink.file.id, finishedBlob).catch(() => undefined);
+              } else {
+                finishedBlob = await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
+              }
               fileSources.current.set(sink.file.id, new File([finishedBlob], sink.file.name, { type: sink.file.type }));
               setLocalFiles((current) => new Set(current).add(sink.file.id));
               const currentMeta = session.files.get(sink.file.id);

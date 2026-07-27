@@ -36,30 +36,43 @@ export async function putRoom(room: RoomRecord): Promise<void> {
 }
 
 export async function putFile(roomId: string, fileId: string, blob: Blob): Promise<void> {
-  const db = await openDb();
-  await requestResult(
-    db.transaction("files", "readwrite").objectStore("files").put({
-      key: `${roomId}:${fileId}`,
-      roomId,
-      fileId,
-      blob,
-    }),
-  );
+  try {
+    const db = await openDb();
+    await requestResult(
+      db.transaction("files", "readwrite").objectStore("files").put({
+        key: `${roomId}:${fileId}`,
+        roomId,
+        fileId,
+        blob,
+      }),
+    );
+  } catch (error) {
+    console.warn("[p2p-share] IndexedDB putFile bypassed:", error);
+  }
 }
 
 export async function getFile(roomId: string, fileId: string): Promise<Blob | undefined> {
-  const db = await openDb();
-  const result = await requestResult<any>(
-    db.transaction("files", "readonly").objectStore("files").get(`${roomId}:${fileId}`),
-  );
-  return result?.blob;
+  try {
+    const db = await openDb();
+    const result = await requestResult<any>(
+      db.transaction("files", "readonly").objectStore("files").get(`${roomId}:${fileId}`),
+    );
+    return result?.blob;
+  } catch (error) {
+    console.warn("[p2p-share] IndexedDB getFile bypassed:", error);
+    return undefined;
+  }
 }
 
 export async function deleteFile(roomId: string, fileId: string): Promise<void> {
-  const db = await openDb();
-  await requestResult(
-    db.transaction("files", "readwrite").objectStore("files").delete(`${roomId}:${fileId}`),
-  );
+  try {
+    const db = await openDb();
+    await requestResult(
+      db.transaction("files", "readwrite").objectStore("files").delete(`${roomId}:${fileId}`),
+    );
+  } catch (error) {
+    console.warn("[p2p-share] IndexedDB deleteFile bypassed:", error);
+  }
 }
 
 export async function putChunk(
@@ -68,16 +81,20 @@ export async function putChunk(
   index: number,
   bytes: Uint8Array,
 ): Promise<void> {
-  const db = await openDb();
-  await requestResult(
-    db.transaction("chunks", "readwrite").objectStore("chunks").put({
-      key: `${roomId}:${transferId}:${index.toString().padStart(8, "0")}`,
-      roomId,
-      transferId,
-      index,
-      bytes,
-    }),
-  );
+  try {
+    const db = await openDb();
+    await requestResult(
+      db.transaction("chunks", "readwrite").objectStore("chunks").put({
+        key: `${roomId}:${transferId}:${index.toString().padStart(8, "0")}`,
+        roomId,
+        transferId,
+        index,
+        bytes,
+      }),
+    );
+  } catch (error) {
+    console.warn("[p2p-share] IndexedDB putChunk bypassed:", error);
+  }
 }
 
 export async function finishChunks(
