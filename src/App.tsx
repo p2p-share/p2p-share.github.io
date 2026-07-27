@@ -21,7 +21,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import { analyzeCode, formatCode } from "./lib/analysis";
 import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
-import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putRoom } from "./lib/db";
+import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
 import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
 import { streamUtf8Blob, type StreamImportProgress } from "./lib/largeImport";
 import {
@@ -2638,7 +2638,7 @@ async function sendFile(
   setTransfers: React.Dispatch<React.SetStateAction<Transfer[]>>,
   source?: Blob,
 ) {
-  const file = source || fileSources.current.get(fileId) || await getFile(session.roomId, fileId);
+  const file = source || await getFile(session.roomId, fileId);
   const meta = session.files.get(fileId);
   if (!file || !meta) {
     await session.mesh.send({ type: "file-error", target, transferId, message: "File is not available." });
