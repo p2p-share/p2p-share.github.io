@@ -39,6 +39,8 @@ export type ChatMessage = {
 
 export type VersionLog = {
   id: string;
+  fileId?: string;
+  fileName?: string;
   peerId: string;
   author: string;
   color: string;

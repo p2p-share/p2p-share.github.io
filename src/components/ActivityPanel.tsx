@@ -30,6 +30,10 @@ export function ActivityPanel({
               <strong>{log.author}</strong>
               <time>{new Date(log.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
             </div>
+            <div className="activity-file" title={log.fileName || "File not recorded"}>
+              <Icon name="file" />
+              <span>{log.fileName || "Earlier log · file not recorded"}</span>
+            </div>
             <p><b>{log.action === "insert" ? "Added" : "Removed"}</b> {log.fromLine === log.toLine ? `line ${log.fromLine}` : `lines ${log.fromLine}–${log.toLine}`}</p>
             <pre>{log.text || "(empty line)"}</pre>
           </article>

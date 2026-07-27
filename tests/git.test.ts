@@ -1,4 +1,4 @@
-import { createGist, createGitHubRepository } from "../src/lib/git";
+import { createGist, createGitHubRepository, importGitHubRepository } from "../src/lib/git";
 
 describe("GitHub publishing", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -39,5 +39,30 @@ describe("GitHub publishing", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[1]?.[0]).toContain("/contents/src/app.js");
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ branch: "main" });
+  });
+
+  it("imports a public repository through the CORS-enabled CDN without GitHub authentication", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        files: [
+          { type: "directory", name: "src", files: [{ type: "file", name: "app.ts", size: 27 }] },
+          { type: "file", name: "README.md", size: 7 },
+          { type: "file", name: "large.txt", size: 2_000_000 },
+        ],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("export const ready = true;\n", { status: 200 }))
+      .mockResolvedValueOnce(new Response("# Demo\n", { status: 200 }));
+
+    const result = await importGitHubRepository("https://github.com/alex/demo");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://data.jsdelivr.com/v1/package/gh/alex/demo@main");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("https://cdn.jsdelivr.net/gh/alex/demo@main/");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("api.github.com"))).toBe(false);
+    expect(result.files).toEqual([
+      { name: "src/app.ts", content: "export const ready = true;\n" },
+      { name: "README.md", content: "# Demo\n" },
+    ]);
+    expect(result.branch).toBe("main");
   });
 });

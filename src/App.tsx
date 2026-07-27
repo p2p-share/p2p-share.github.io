@@ -923,6 +923,8 @@ export function App() {
           fromLine: 1,
           toLine: stats.lines,
           text: `[Previous ${stats.lines.toLocaleString()}-line document replaced by imported file]`,
+          fileId: targetId,
+          fileName: file.name,
           timestamp: Date.now(),
         }]);
         targetText.delete(0, targetText.length);
@@ -996,6 +998,8 @@ export function App() {
           fromLine: 1,
           toLine: result.lines,
           text: `[Imported ${result.lines.toLocaleString()} lines, ${result.characters.toLocaleString()} characters, and ${result.bytesRead.toLocaleString()} bytes from ${file.name}]`,
+          fileId: targetId,
+          fileName: file.name,
           timestamp: Date.now(),
         }]);
       }, STREAM_IMPORT_ORIGIN);
@@ -1113,7 +1117,7 @@ export function App() {
 
   const createProjectFile = (path?: string) => {
     if (isReadOnly || !session) return;
-    const requested = path ?? window.prompt("File path", `src/untitled-${session.codeFiles.size + 1}.js`);
+    const requested = path ?? window.prompt("File path (for example: src/app.js)");
     if (!requested) return;
     const name = sanitizeProjectPath(requested);
     const id = crypto.randomUUID();
@@ -1200,6 +1204,7 @@ export function App() {
     session.doc.transact(() => {
       session.logs.push([{
         id: crypto.randomUUID(), peerId: session.mesh.peerId, author: localName, color: localColor,
+        fileId: activeFileId, fileName: activeMeta?.name || "untitled",
         action: "delete", fromLine: 1, toLine: documentStats(removed).lines, text: removed, timestamp: Date.now(),
       }]);
       activeText.delete(0, activeText.length);
@@ -1604,6 +1609,10 @@ export function App() {
               <Icon name="download" />
             </button>
           </div>
+          <button className="new-room-header" onClick={createNewRoom} aria-label="Create new room" title="Create a new room">
+            <Icon name="new" />
+            <span>New room</span>
+          </button>
           <button className="share-button" onClick={() => setShareOpen(true)}>
             <Icon name="share" />
             <span>Share</span>
@@ -1776,9 +1785,6 @@ export function App() {
             <button className={`toolbar-action ${workbenchOpen ? "active" : ""}`} aria-pressed={workbenchOpen} onClick={() => setWorkbenchOpen((value) => !value)} title="Analyze, format and safely preview">
               <Icon name="braces" /> Workbench
             </button>
-            <button className="toolbar-action" onClick={createNewRoom} title="Create a new room">
-              <Icon name="new" /> New
-            </button>
             <button className="toolbar-action" onClick={clearDocument} disabled={!activeText?.length || Boolean(importProgress)} title="Clear editor">
               <Icon name="trash" /> Clear
             </button>
@@ -1796,6 +1802,8 @@ export function App() {
             readOnly={isReadOnly}
             largeDocument={(activeText?.length || 0) > LARGE_DOCUMENT_THRESHOLD}
             logs={session.logs}
+            fileId={activeFileId}
+            fileName={name}
             peerId={session.mesh.peerId}
             author={localName}
             authorColor={localColor}

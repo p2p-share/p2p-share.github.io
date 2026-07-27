@@ -129,6 +129,8 @@ export function CodeEditor({
   readOnly,
   largeDocument,
   logs,
+  fileId,
+  fileName,
   peerId,
   author,
   authorColor,
@@ -145,6 +147,8 @@ export function CodeEditor({
   readOnly: boolean;
   largeDocument: boolean;
   logs: Y.Array<VersionLog>;
+  fileId: string;
+  fileName: string;
   peerId: string;
   author: string;
   authorColor: string;
@@ -210,6 +214,8 @@ export function CodeEditor({
           if (removed) {
             logs.push([{
               id: crypto.randomUUID(),
+              fileId,
+              fileName,
               peerId,
               author,
               color: authorColor,
@@ -225,6 +231,8 @@ export function CodeEditor({
             const fromLine = update.startState.doc.lineAt(fromA).number;
             logs.push([{
               id: crypto.randomUUID(),
+              fileId,
+              fileName,
               peerId,
               author,
               color: authorColor,
@@ -296,7 +304,7 @@ export function CodeEditor({
       window.removeEventListener("p2p-editor-command", commands);
       view.destroy();
     };
-  }, [text, languageExtension, dark, themeMode, fontSize, lineWrap, tabSize, keyBinding, minimap, readOnly, largeDocument, logs, peerId, author, authorColor]);
+  }, [text, languageExtension, dark, themeMode, fontSize, lineWrap, tabSize, keyBinding, minimap, readOnly, largeDocument, logs, fileId, fileName, peerId, author, authorColor]);
 
   return <div className="editor-host" ref={hostRef} aria-label="Collaborative code editor" />;
 }

@@ -106,6 +106,7 @@ export function PublishPanel({
           </section>
           <section className="git-action">
             <label>GitHub or GitLab repository URL<input value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} placeholder="https://github.com/owner/repository" /></label>
+            <p className="auth-help">Public GitHub repositories import directly from a repository archive without signing in or using your API rate limit. Authentication is needed only for private repositories.</p>
             <button className="secondary-button" disabled={!repoUrl || Boolean(busy)} onClick={() => void act("import", async () => {
               const result = repoUrl.includes("gitlab.com") ? await importGitLabRepository(repoUrl) : await importGitHubRepository(repoUrl, token || undefined);
               onImport(result.files); onSourceChange({ url: result.url, branch: result.branch, commit: result.commit });
