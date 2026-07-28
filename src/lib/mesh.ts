@@ -2,7 +2,7 @@ import { decryptBytes, encryptBytes } from "./crypto";
 import { decodeJson, encodeJson } from "./encoding";
 import { recommendedTransferChunkSize } from "./fileTransfer";
 import { shouldAcceptIncomingOffer } from "./overlay";
-import { TURN_RELAY_CONFIGURED, WEBRTC_ICE_SERVERS } from "./ice";
+import { WEBRTC_ICE_SERVERS } from "./ice";
 import {
   decodeSignal,
   encodeSignal,
@@ -77,6 +77,7 @@ export class PeerMesh extends EventTarget {
   constructor(
     readonly roomId: string,
     key?: CryptoKey,
+    private readonly iceServers: RTCIceServer[] = WEBRTC_ICE_SERVERS,
   ) {
     super();
     this.key = key;
@@ -149,7 +150,7 @@ export class PeerMesh extends EventTarget {
 
   private createConnection(id: string): Link {
     const pc = new RTCPeerConnection({
-      iceServers: WEBRTC_ICE_SERVERS,
+      iceServers: this.iceServers,
       iceCandidatePoolSize: 10,
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
@@ -180,7 +181,10 @@ export class PeerMesh extends EventTarget {
         if (pc.connectionState === "failed" && !this.closing) {
           if (!link.remotePeerId) {
             this.dispatchEvent(new CustomEvent("error", {
-              detail: TURN_RELAY_CONFIGURED
+              detail: this.iceServers.some((server) =>
+                (Array.isArray(server.urls) ? server.urls : [server.urls])
+                  .some((url) => /^turns?:/i.test(url)),
+              )
                 ? "The peer route failed through both direct and TURN relay candidates. Retrying may select another route."
                 : "Direct connection failed. This network may require a TURN relay; automatic rooms will keep retrying.",
             }));

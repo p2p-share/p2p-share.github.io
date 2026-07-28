@@ -28,17 +28,18 @@ Firebase is signaling infrastructure, so the application is no longer strictly i
 
 ### Reliable NAT traversal with TURN
 
-GitHub Pages cannot operate a TURN relay itself because TURN must accept long-lived UDP/TCP connections. Obtain TURN credentials from a managed provider or a Coturn deployment, then configure these GitHub repository settings:
+GitHub Pages cannot safely hold a Cloudflare TURN API token or mint credentials. The repository therefore includes `cloudflare-turn-worker`, a zero-storage credential broker that keeps the TURN key server-side and returns only expiring ICE credentials.
 
-- Variable `VITE_TURN_URLS`: comma-separated relay URLs. Include UDP and TLS/TCP transports where the provider supports them, for example `turn:relay.example.com:3478?transport=udp,turns:relay.example.com:5349?transport=tcp`.
-- Secret `VITE_TURN_USERNAME`: TURN username.
-- Secret `VITE_TURN_CREDENTIAL`: TURN credential.
+1. Rotate any TURN API token that has been pasted into chat or a terminal transcript.
+2. Follow [`cloudflare-turn-worker/README.md`](cloudflare-turn-worker/README.md) to store `TURN_KEY_ID` and `TURN_API_TOKEN` as Worker secrets and deploy the Worker.
+3. Add its public URL as the GitHub repository variable `VITE_TURN_CREDENTIALS_URL`.
+4. Rerun the GitHub Pages workflow.
 
-The Pages workflow adds these values to the production build automatically. Vite client variables are necessarily visible to browsers, even when sourced from GitHub Actions secrets. Use provider-issued, origin-restricted, quota-limited, or short-lived credentials—not an unrestricted permanent Coturn administrator credential. For truly ephemeral TURN credentials, place a small authenticated credential-minting endpoint in front of Coturn and extend the client to request them at runtime.
+The browser fetches a fresh credential set once per page lifetime with a six-second timeout. If the Worker or Cloudflare TURN API is unavailable, the room continues with its public STUN pool instead of failing startup. Credentials are held only in page memory and both Worker and client use `no-store`.
 
-After saving the settings, run the Pages workflow again. WebRTC tries direct host and STUN paths first and can fall back to TURN. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and the optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
+WebRTC tries direct host and STUN paths first and can fall back to Cloudflare TURN over UDP, TCP, or TLS. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
 
-For Metered, place all of the provider's `turn:` and `turns:` URLs in the single comma-separated `VITE_TURN_URLS` variable. The public Metered STUN endpoint is already included in the application's default ICE pool. Keep the username and credential in the two GitHub settings above rather than committing them to this repository.
+Static `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL` settings remain supported as a compatibility fallback, but they become visible in the public JavaScript bundle and are not recommended for permanent credentials.
 
 Consumed signaling documents and intentional participant departures are deleted by the browser. Firestore TTL is intentionally not enabled in `firestore.indexes.json` because managed TTL deletion requires billing. Projects on the Blaze plan can opt in by adding TTL policies for the `expiresAt` field on the `rooms` and `signals` collection groups.
 

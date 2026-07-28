@@ -1,0 +1,7 @@
+name = "p2p-share-turn-credentials"
+main = "src/index.ts"
+compatibility_date = "2026-07-28"
+
+[vars]
+ALLOWED_ORIGIN = "https://p2p-share.github.io"
+TURN_CREDENTIAL_TTL = "3600"

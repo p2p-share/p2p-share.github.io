@@ -50,6 +50,7 @@ import {
 import { inspectInvite, PeerMesh } from "./lib/mesh";
 import { FirebaseSignaling, getFirebaseRoomSecurity, type FirebaseRoomSecurity } from "./lib/firebaseSignaling";
 import { requiresDisplayName } from "./lib/identity";
+import { loadIceServers } from "./lib/ice";
 import { emptyRunResult, runBrowserCode } from "./lib/runner";
 import type { InviteToken } from "./lib/signaling";
 import type { AccessMode, AnalysisReport, ChatMessage, CodeFileMeta, Presence, ProjectManifest, ReviewEntry, RoomRecord, RunResult, SharedFile, Transfer, VersionLog } from "./types";
@@ -444,7 +445,7 @@ export function App() {
       const mainText = codeFiles.get("main")!;
       const locked = Boolean(bootState.record?.locked || bootState.invite?.locked || bootState.firebaseSecurity?.locked);
       const salt = bootState.record?.salt || bootState.invite?.salt || bootState.firebaseSecurity?.salt;
-      const mesh = new PeerMesh(bootState.roomId, key);
+      const mesh = new PeerMesh(bootState.roomId, key, await loadIceServers());
       const signaling = new FirebaseSignaling(
         bootState.roomId,
         mesh,

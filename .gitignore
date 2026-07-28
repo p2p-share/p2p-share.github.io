@@ -3,6 +3,8 @@ dist/
 coverage/
 .vite/
 *.local
+.dev.vars
+.dev.vars.*
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
