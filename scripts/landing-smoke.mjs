@@ -39,13 +39,16 @@ await joinPage.close();
 
 const customPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 await customPage.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
-await customPage.getByLabel("Invite link or room ID").fill("ab");
-await customPage.getByRole("button", { name: "Create using this custom ID" }).click();
+await customPage.getByRole("tab", { name: "Create new room" }).click();
+await customPage.getByLabel("Custom room name").fill("ab");
+await customPage.getByRole("button", { name: "Create private room" }).click();
 await customPage.getByRole("alert").getByText(/3–64/).waitFor();
-await customPage.getByLabel("Invite link or room ID").fill("my_team-room");
-await customPage.getByRole("button", { name: "Create using this custom ID" }).click();
+await customPage.getByLabel("Custom room name").fill("my_team-room");
+await customPage.locator("#landing-create-password").fill("room-pass-2026");
+await customPage.getByLabel("Confirm password").fill("room-pass-2026");
+await customPage.getByRole("button", { name: "Create private room" }).click();
 await customPage.waitForURL(/\/my_team-room$/, { timeout: 15_000 });
-results.push({ label: "custom-room", path: new globalThis.URL(customPage.url()).pathname });
+results.push({ label: "custom-room", path: new globalThis.URL(customPage.url()).pathname, passwordProtected: true });
 await customPage.close();
 
 const createPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -54,16 +57,22 @@ await createPage.getByRole("button", { name: "Create a new room" }).click();
 await createPage.waitForURL(/\/[A-Za-z0-9]{6}$/, { timeout: 15_000 });
 const createdRoomId = new globalThis.URL(createPage.url()).pathname.slice(1);
 const onboarding = createPage.getByLabel("Your display name");
-if (await onboarding.isVisible()) {
+try {
+  await onboarding.waitFor({ state: "visible", timeout: 10_000 });
   await onboarding.fill("Landing owner");
   await createPage.getByRole("button", { name: "Enter workspace" }).click();
+} catch {
+  // A saved display name intentionally skips onboarding in returning browsers.
 }
 await createPage.getByLabel("Collaborative code editor").waitFor({ timeout: 20_000 });
+await createPage.locator(".language-trigger").getByText("Plain text").waitFor();
 await createPage.locator(".share-button").click();
 const inviteDialog = createPage.getByRole("dialog", { name: "Invite people" });
 await inviteDialog.getByLabel("Password", { exact: true }).waitFor();
 await inviteDialog.getByLabel("Confirm password").waitFor();
-results.push({ label: "create", roomId: createdRoomId, invitePasswordFields: true });
+await inviteDialog.getByText("Owner", { exact: true }).waitFor();
+await inviteDialog.getByText("You", { exact: true }).waitFor();
+results.push({ label: "create", roomId: createdRoomId, invitePasswordFields: true, defaultLanguage: "Plain text", ownerVisible: true });
 await createPage.close();
 
 const directPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });

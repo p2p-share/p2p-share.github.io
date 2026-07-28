@@ -411,7 +411,8 @@ export function App() {
       const reviews = doc.getArray<ReviewEntry>("reviews");
       const description = doc.getText("description");
       if (!meta.has("name")) meta.set("name", bootState.record?.name || "untitled");
-      if (!meta.has("language")) meta.set("language", bootState.record?.language || "javascript");
+      if (!meta.has("language")) meta.set("language", bootState.record?.language || "text");
+      if (bootState.owner && !meta.has("creatorName")) meta.set("creatorName", localNameRef.current);
       if (!meta.has("visibility")) meta.set("visibility", "private");
       if (!meta.has("projectManifest")) {
         meta.set("projectManifest", {
@@ -432,7 +433,7 @@ export function App() {
         codeFiles.set("main", main);
         codeFileMeta.set("main", {
           name: String(meta.get("name") || "untitled"),
-          language: String(meta.get("language") || "javascript"),
+          language: String(meta.get("language") || "text"),
           createdBy: localNameRef.current,
           createdAt: Date.now(),
         });
@@ -445,7 +446,12 @@ export function App() {
         bootState.roomId,
         mesh,
         () => localNameRef.current,
-        { locked, salt },
+        {
+          locked,
+          salt,
+          verificationPayload: bootState.firebaseSecurity?.verificationPayload,
+          verificationIv: bootState.firebaseSecurity?.verificationIv,
+        },
       );
       const tabs = new CrossTabCoordinator(bootState.roomId);
       const availableIds: string[] = [];
@@ -503,7 +509,28 @@ export function App() {
         const access = requestedAccess === "read" ? "read" as const : requestedAccess === "edit" ? "edit" as const : undefined;
         const owner = firebaseSecurity?.isOwner === true
           || sessionStorage.getItem(`p2p-share:created-room:${roomId}`) === "yes";
-        const state = { roomId, record, invite, inviteToken, access, firebaseSecurity, owner };
+        let state: BootState = { roomId, record, invite, inviteToken, access, firebaseSecurity, owner };
+        const createPassword = sessionStorage.getItem(`p2p-share:create-password:${roomId}`);
+        if (createPassword && owner && !record && !firebaseSecurity) {
+          sessionStorage.removeItem(`p2p-share:create-password:${roomId}`);
+          const salt = createSalt();
+          const key = await deriveRoomKey(createPassword, salt);
+          const verification = await encryptBytes(new TextEncoder().encode(ROOM_PASSWORD_MARKER), key);
+          state = {
+            ...state,
+            firebaseSecurity: {
+              locked: true,
+              salt,
+              verificationPayload: verification.payload,
+              verificationIv: verification.iv,
+              isOwner: true,
+            },
+          };
+          setBoot(state);
+          await startSession(state, key);
+          return;
+        }
+        sessionStorage.removeItem(`p2p-share:create-password:${roomId}`);
         setBoot(state);
         if (record?.locked || invite?.locked || firebaseSecurity?.locked) {
           const pendingPassword = sessionStorage.getItem(`p2p-share:pending-password:${roomId}`);
@@ -709,6 +736,8 @@ export function App() {
             name: String(body.name),
             color: String(body.color),
             lastSeen: Number(body.seenAt),
+            access: body.access === "read" ? "read" : "edit",
+            owner: body.owner === true,
           };
           setPresences((current) => [
             ...current.filter((item) => item.peerId !== next.peerId),
@@ -1582,6 +1611,18 @@ export function App() {
     }
     sessionStorage.setItem("sharecode:guest-name", nextName);
     needsOnboarding.current = false;
+    if (session?.owner) {
+      session.doc.transact(() => {
+        session.meta.set("creatorName", nextName);
+        const initialMeta = session.codeFileMeta.get("main");
+        if (initialMeta) {
+          session.codeFileMeta.set("main", {
+            ...initialMeta,
+            createdBy: nextName,
+          });
+        }
+      }, "creator-onboarding");
+    }
     setLocalName(nextName);
     setNameDraft(nextName);
     setOnboardingError("");
@@ -1874,12 +1915,18 @@ export function App() {
   if (landingOpen) {
     return (
       <LandingPage
-        onCreate={(customRoomId) => {
+        onCreate={(customRoomId, roomPassword) => {
           const roomId = customRoomId?.trim() || newRoomId();
           if (!/^[A-Za-z0-9_-]{3,64}$/.test(roomId)) {
             return "Use 3–64 letters, numbers, underscores, or hyphens for a custom room ID.";
           }
+          if (roomPassword && roomPassword.length < 8) {
+            return "Use at least 8 characters for a room password.";
+          }
           sessionStorage.setItem(`p2p-share:created-room:${roomId}`, "yes");
+          if (roomPassword) {
+            sessionStorage.setItem(`p2p-share:create-password:${roomId}`, roomPassword);
+          }
           setLandingOpen(false);
           location.href = roomUrl(roomId);
           return;
@@ -1935,7 +1982,15 @@ export function App() {
   const activeProjectFile = projectFiles.find((file) => file.id === activeFileId) || projectFiles[0];
   const sharedFiles = [...session.files.values()].sort((a, b) => b.addedAt - a.addedAt);
   const allPresence: Presence[] = [
-    { peerId: session.mesh.peerId, name: localName, color: localColor, lastSeen: Date.now(), local: true },
+    {
+      peerId: session.mesh.peerId,
+      name: localName,
+      color: localColor,
+      lastSeen: Date.now(),
+      local: true,
+      owner: session.owner,
+      access: accessMode,
+    },
     ...presences,
   ];
 
@@ -2416,8 +2471,9 @@ export function App() {
         busy={shareBusy}
         error={shareError}
         peerCount={peerCount}
-        peers={presences}
+        peers={allPresence}
         peerPolicies={peerPolicies}
+        currentAccess={accessMode}
         canManagePeers={session.owner}
         roomLocked={session.locked}
         onCreateInvite={(access, invitePassword) => void createInvite(access, invitePassword)}

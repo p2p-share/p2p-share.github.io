@@ -133,6 +133,7 @@ export function ShareDialog({
   peerCount,
   peers,
   peerPolicies,
+  currentAccess,
   canManagePeers,
   roomLocked,
   onCreateInvite,
@@ -151,6 +152,7 @@ export function ShareDialog({
   peerCount: number;
   peers: Presence[];
   peerPolicies: Map<string, AccessMode>;
+  currentAccess: AccessMode;
   canManagePeers: boolean;
   roomLocked: boolean;
   onCreateInvite: (access: AccessMode, password?: string) => void;
@@ -267,18 +269,52 @@ export function ShareDialog({
             </>
           )}
 
-          {canManagePeers && peers.length > 0 && (
+          {peers.length > 0 && (
             <section className="peer-access-manager">
-              <div><strong>Connected peer access</strong><span>Changes apply immediately to each cooperative peer.</span></div>
-              {peers.map((peer) => (
-                <label key={peer.peerId}>
-                  <span><i style={{ background: peer.color }} />{peer.name}</span>
-                  <select value={peerPolicies.get(peer.peerId) || "edit"} onChange={(event) => onChangePeerAccess(peer.peerId, event.target.value as AccessMode)}>
-                    <option value="edit">Can edit</option>
-                    <option value="read">Read only</option>
-                  </select>
-                </label>
-              ))}
+              <div className="peer-manager-heading">
+                <strong>Connected people</strong>
+                <span>{peers.length} {peers.length === 1 ? "person is" : "people are"} visible on this browser’s active routes.</span>
+              </div>
+              <div className="peer-detail-list">
+                {peers.map((peer) => {
+                  const peerAccess = peer.local
+                    ? currentAccess
+                    : peerPolicies.get(peer.peerId) || peer.access || "edit";
+                  return (
+                    <article className="peer-detail-card" key={peer.peerId}>
+                      <span className="peer-detail-avatar" style={{ background: peer.color }}>
+                        {peer.name.slice(0, 1).toUpperCase()}
+                      </span>
+                      <div className="peer-detail-identity">
+                        <strong>
+                          {peer.name}
+                          {peer.local && <em>You</em>}
+                          {peer.owner && <em className="owner">Owner</em>}
+                        </strong>
+                        <span title={peer.peerId}>Peer {peer.peerId.slice(0, 8)}…</span>
+                      </div>
+                      <span className="peer-connected-state"><i />Connected</span>
+                      {canManagePeers && !peer.local ? (
+                        <label className="peer-access-control">
+                          <span className="sr-only">Access for {peer.name}</span>
+                          <select
+                            aria-label={`Access for ${peer.name}`}
+                            value={peerAccess}
+                            onChange={(event) => onChangePeerAccess(peer.peerId, event.target.value as AccessMode)}
+                          >
+                            <option value="edit">Can edit</option>
+                            <option value="read">Read only</option>
+                          </select>
+                        </label>
+                      ) : (
+                        <span className={`peer-access-badge ${peerAccess}`}>
+                          {peerAccess === "read" ? "Read only" : "Can edit"}
+                        </span>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
             </section>
           )}
 

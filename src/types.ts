@@ -26,6 +26,8 @@ export type Presence = {
   color: string;
   lastSeen: number;
   local?: boolean;
+  owner?: boolean;
+  access?: AccessMode;
 };
 
 export type ChatMessage = {

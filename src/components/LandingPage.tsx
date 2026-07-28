@@ -79,11 +79,15 @@ export function LandingPage({
   onCreate,
   onOpen,
 }: {
-  onCreate: (customRoomId?: string) => string | undefined | void;
+  onCreate: (customRoomId?: string, password?: string) => string | undefined | void;
   onOpen: (value: string, password?: string) => string | undefined;
 }) {
   const [room, setRoom] = useState("");
   const [password, setPassword] = useState("");
+  const [createRoom, setCreateRoom] = useState("");
+  const [createPassword, setCreatePassword] = useState("");
+  const [createPasswordConfirm, setCreatePasswordConfirm] = useState("");
+  const [roomMode, setRoomMode] = useState<"join" | "create">("join");
   const [error, setError] = useState("");
   const recent = useMemo(loadRecentProjects, []);
   const join = () => {
@@ -91,7 +95,15 @@ export function LandingPage({
     if (message) setError(message);
   };
   const createCustom = () => {
-    const message = onCreate(room);
+    if (createPassword && createPassword.length < 8) {
+      setError("Use at least 8 characters for a room password.");
+      return;
+    }
+    if (createPassword !== createPasswordConfirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    const message = onCreate(createRoom, createPassword || undefined);
     if (message) setError(message);
   };
 
@@ -140,20 +152,79 @@ export function LandingPage({
       </section>
 
       <section className="landing-join" id="join">
-        <div><span className="landing-kicker">Already invited?</span><h2>Enter a room in seconds</h2><p>Paste a p2p-share link or enter its short room ID.</p></div>
-        <div className="join-entry">
-          <div className="join-control">
-            <label htmlFor="landing-room" className="sr-only">Invite link or room ID</label>
-            <input id="landing-room" value={room} onChange={(event) => { setRoom(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Room ID or invite link" />
-            <button onClick={join}>Join room <Icon name="chevron" /></button>
+        <div className="landing-room-intro">
+          <span className="landing-kicker">{roomMode === "join" ? "Already invited?" : "Your own workspace"}</span>
+          <h2>{roomMode === "join" ? "Enter a room in seconds" : "Create a room that is easy to share"}</h2>
+          <p>{roomMode === "join"
+            ? "Paste a p2p-share invite link or enter the room's short ID."
+            : "Choose a memorable room name and optionally protect it before anyone joins."}</p>
+          <div className="room-benefits" aria-hidden="true">
+            <span><Icon name="shield" />Private peer network</span>
+            <span><Icon name="users" />No account needed</span>
           </div>
-          {error && <p role="alert">{error}</p>}
-          <button className="custom-room-button" onClick={createCustom}><Icon name="plus" />Create using this custom ID</button>
-          <small>Custom IDs support 3–64 letters, numbers, underscores, or hyphens.</small>
         </div>
-        <div className="join-password">
-          <label htmlFor="landing-password">Room password <span>optional</span></label>
-          <input id="landing-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Enter only for a protected room" />
+
+        <div className="landing-room-workspace">
+          <div className="landing-room-tabs" role="tablist" aria-label="Room action">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={roomMode === "join"}
+              className={roomMode === "join" ? "active" : ""}
+              onClick={() => { setRoomMode("join"); setError(""); }}
+            >
+              <Icon name="users" />Join a room
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={roomMode === "create"}
+              className={roomMode === "create" ? "active" : ""}
+              onClick={() => { setRoomMode("create"); setError(""); }}
+            >
+              <Icon name="plus" />Create new room
+            </button>
+          </div>
+
+          {roomMode === "join" ? (
+            <div className="landing-room-form" role="tabpanel">
+              <label htmlFor="landing-room">Invite link or room ID</label>
+              <div className="room-input">
+                <Icon name="share" />
+                <input id="landing-room" value={room} onChange={(event) => { setRoom(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Example: A1b2C3" autoComplete="off" />
+              </div>
+              <label htmlFor="landing-password">Room password <span>optional</span></label>
+              <div className="room-input">
+                <Icon name="lock" />
+                <input id="landing-password" type="password" autoComplete="current-password" value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Only needed for protected rooms" />
+              </div>
+              {error && <p className="landing-form-error" role="alert">{error}</p>}
+              <button className="landing-room-submit" onClick={join}>Join room <Icon name="chevron" /></button>
+              <small>Your password never leaves this browser.</small>
+            </div>
+          ) : (
+            <div className="landing-room-form" role="tabpanel">
+              <label htmlFor="landing-create-room">Custom room name</label>
+              <div className="room-input">
+                <Icon name="braces" />
+                <input id="landing-create-room" value={createRoom} onChange={(event) => { setCreateRoom(event.target.value); setError(""); }} placeholder="Example: design-team" autoComplete="off" />
+              </div>
+              <div className="room-url-preview"><Icon name="globe" /><span>p2p-share.github.io/</span><b>{createRoom.trim() || "your-room"}</b></div>
+              <div className="create-password-grid">
+                <div>
+                  <label htmlFor="landing-create-password">Password <span>optional</span></label>
+                  <div className="room-input"><Icon name="lock" /><input id="landing-create-password" type="password" autoComplete="new-password" value={createPassword} onChange={(event) => { setCreatePassword(event.target.value); setError(""); }} placeholder="Minimum 8 characters" /></div>
+                </div>
+                <div>
+                  <label htmlFor="landing-create-password-confirm">Confirm password</label>
+                  <div className="room-input"><Icon name="check" /><input id="landing-create-password-confirm" type="password" autoComplete="new-password" value={createPasswordConfirm} onChange={(event) => { setCreatePasswordConfirm(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && createCustom()} placeholder="Repeat password" /></div>
+                </div>
+              </div>
+              {error && <p className="landing-form-error" role="alert">{error}</p>}
+              <button className="landing-room-submit" onClick={createCustom}><Icon name="plus" />Create private room</button>
+              <small>Use 3–64 letters, numbers, underscores, or hyphens. Password protection is optional.</small>
+            </div>
+          )}
         </div>
       </section>
 
