@@ -19,12 +19,12 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
 await page.goto("http://127.0.0.1:4173/abc", { waitUntil: "domcontentloaded" });
 await page.getByLabel("Your display name").or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
-if (new URL(page.url()).pathname !== "/abc") throw new Error(`Clean room path changed unexpectedly: ${page.url()}`);
+if (new globalThis.URL(page.url()).pathname !== "/abc") throw new Error(`Clean room path changed unexpectedly: ${page.url()}`);
 if (await page.locator(".landing-page").count()) throw new Error("A clean room path opened the landing page.");
 
 await page.goto("http://127.0.0.1:4173/#room=Legacy42", { waitUntil: "domcontentloaded" });
 await page.getByLabel("Your display name").or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
-if (new URL(page.url()).pathname !== "/Legacy42") throw new Error(`Legacy room URL was not upgraded: ${page.url()}`);
+if (new globalThis.URL(page.url()).pathname !== "/Legacy42") throw new Error(`Legacy room URL was not upgraded: ${page.url()}`);
 
 await browser.close();
 globalThis.console.log(JSON.stringify({
