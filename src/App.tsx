@@ -1022,6 +1022,28 @@ export function App() {
     };
   }, [localColor, openCall, session, showToast]);
 
+  useEffect(() => {
+    if (!session) return;
+    const refreshCredentials = () => {
+      void loadIceServers(true)
+        .then((iceServers) => session.mesh.updateIceServers(iceServers))
+        .catch(() => undefined);
+    };
+    const timer = window.setInterval(refreshCredentials, 35 * 60 * 1000);
+    const refreshAfterBackground = () => {
+      if (document.visibilityState === "visible") {
+        void loadIceServers()
+          .then((iceServers) => session.mesh.updateIceServers(iceServers))
+          .catch(() => undefined);
+      }
+    };
+    document.addEventListener("visibilitychange", refreshAfterBackground);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshAfterBackground);
+    };
+  }, [session]);
+
   const unlock = async () => {
     if (!boot) return;
     if (!unlockPassword) {

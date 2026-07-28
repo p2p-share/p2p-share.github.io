@@ -1,13 +1,19 @@
 export const CLOUDFLARE_STUN_FALLBACK: RTCIceServer[] = [{
-  urls: [
-    "stun:stun.cloudflare.com:3478",
-    "stun:stun.cloudflare.com:53",
-  ],
+  urls: ["stun:stun.cloudflare.com:3478"],
 }];
 
 type IceServerResponse = {
   iceServers?: unknown;
 };
+
+function iceUrlPriority(url: string) {
+  if (/^turns:.*:443\?transport=tcp$/i.test(url)) return 0;
+  if (/^turns:/i.test(url)) return 1;
+  if (/^turn:.*:80\?transport=tcp$/i.test(url)) return 2;
+  if (/\?transport=tcp$/i.test(url)) return 3;
+  if (/^turn:/i.test(url)) return 4;
+  return 5;
+}
 
 export function normalizeIceServers(value: unknown): RTCIceServer[] {
   if (!Array.isArray(value)) return [];
@@ -16,8 +22,11 @@ export function normalizeIceServers(value: unknown): RTCIceServer[] {
     const candidate = entry as Record<string, unknown>;
     const urls = (Array.isArray(candidate.urls) ? candidate.urls : [candidate.urls])
       .filter((url): url is string =>
-        typeof url === "string" && /^(stun|turn|turns):/i.test(url),
-      );
+        typeof url === "string"
+        && /^(stun|turn|turns):/i.test(url)
+        && !/^[a-z]+:[^?]*:53(?:\?|$)/i.test(url),
+      )
+      .sort((left, right) => iceUrlPriority(left) - iceUrlPriority(right));
     if (!urls.length) return [];
     const hasTurn = urls.some((url) => /^turns?:/i.test(url));
     if (
@@ -34,9 +43,15 @@ export function normalizeIceServers(value: unknown): RTCIceServer[] {
 }
 
 let iceServerRequest: Promise<RTCIceServer[]> | undefined;
+let iceServerLoadedAt = 0;
+const ICE_CREDENTIAL_REFRESH_MS = 40 * 60 * 1000;
 
-export function loadIceServers() {
-  if (iceServerRequest) return iceServerRequest;
+export function loadIceServers(forceRefresh = false) {
+  if (
+    iceServerRequest
+    && !forceRefresh
+    && Date.now() - iceServerLoadedAt < ICE_CREDENTIAL_REFRESH_MS
+  ) return iceServerRequest;
   const endpoint = import.meta.env.VITE_TURN_CREDENTIALS_URL;
   if (!endpoint) return Promise.resolve(CLOUDFLARE_STUN_FALLBACK);
   iceServerRequest = (async () => {
@@ -60,6 +75,7 @@ export function loadIceServers() {
       )) {
         throw new Error("TURN credential service returned no relay routes.");
       }
+      iceServerLoadedAt = Date.now();
       return remote;
     } catch (error) {
       console.warn("[p2p-share] TURN credentials unavailable; using direct STUN routes.", error);

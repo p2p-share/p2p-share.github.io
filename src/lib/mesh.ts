@@ -34,6 +34,7 @@ type Link = {
   remoteStream?: MediaStream;
   opened?: boolean;
   lostNotified?: boolean;
+  relayOnly?: boolean;
 };
 
 type PendingMessage = {
@@ -72,12 +73,13 @@ export class PeerMesh extends EventTarget {
   private key?: CryptoKey;
   private localStream?: MediaStream;
   private offerTimeouts = new Map<string, number>();
+  private relayOnlyPeers = new Set<string>();
   private closing = false;
 
   constructor(
     readonly roomId: string,
     key?: CryptoKey,
-    private readonly iceServers: RTCIceServer[] = CLOUDFLARE_STUN_FALLBACK,
+    private iceServers: RTCIceServer[] = CLOUDFLARE_STUN_FALLBACK,
   ) {
     super();
     this.key = key;
@@ -85,6 +87,21 @@ export class PeerMesh extends EventTarget {
 
   setKey(key?: CryptoKey) {
     this.key = key;
+  }
+
+  updateIceServers(iceServers: RTCIceServer[]) {
+    this.iceServers = iceServers;
+    const connections = new Set(
+      [...this.links.values(), ...this.offers.values()].map((link) => link.pc),
+    );
+    connections.forEach((pc) => {
+      try {
+        pc.setConfiguration({ ...pc.getConfiguration(), iceServers });
+      } catch {
+        // Existing allocations continue with their original credentials. Any
+        // repaired or new route uses the refreshed configuration.
+      }
+    });
   }
 
   get peerCount() {
@@ -148,14 +165,16 @@ export class PeerMesh extends EventTarget {
     return () => this.removeEventListener(event, listener as EventListener);
   }
 
-  private createConnection(id: string): Link {
+  private createConnection(id: string, remotePeerId?: string): Link {
+    const relayOnly = Boolean(remotePeerId && this.relayOnlyPeers.has(remotePeerId));
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers,
       iceCandidatePoolSize: 10,
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
+      iceTransportPolicy: relayOnly ? "relay" : "all",
     });
-    const link: Link = { id, pc };
+    const link: Link = { id, pc, remotePeerId, relayOnly };
     const audio = pc.addTransceiver("audio", { direction: "sendrecv" });
     const video = pc.addTransceiver("video", { direction: "sendrecv" });
     if (this.localStream) {
@@ -177,6 +196,9 @@ export class PeerMesh extends EventTarget {
     };
     pc.onconnectionstatechange = () => {
       if (["failed", "closed"].includes(pc.connectionState)) {
+        if (pc.connectionState === "failed" && link.remotePeerId) {
+          this.relayOnlyPeers.add(link.remotePeerId);
+        }
         this.removeLink(link, pc.connectionState === "failed");
         if (pc.connectionState === "failed" && !this.closing) {
           if (!link.remotePeerId) {
@@ -252,6 +274,7 @@ export class PeerMesh extends EventTarget {
     this.clearOfferTimeout(link.id);
     this.offerTimeouts.set(link.id, window.setTimeout(() => {
       if (!this.offers.has(link.id)) return;
+      if (link.remotePeerId) this.relayOnlyPeers.add(link.remotePeerId);
       link.pc.close();
       this.removeLink(link, false);
     }, AUTOMATIC_OFFER_TIMEOUT_MS));
@@ -290,8 +313,7 @@ export class PeerMesh extends EventTarget {
       throw new Error("This browser has reached its direct peer-route limit.");
     }
     const offerId = crypto.randomUUID();
-    const link = this.createConnection(offerId);
-    link.remotePeerId = target;
+    const link = this.createConnection(offerId, target);
     const channel = link.pc.createDataChannel("p2p-share", { ordered: true });
     this.attachChannel(link, channel);
     await link.pc.setLocalDescription(await link.pc.createOffer());
@@ -311,8 +333,7 @@ export class PeerMesh extends EventTarget {
     if (target === this.peerId || this.hasPeer(target)) return;
     if (this.routeCount >= MAX_DIRECT_PEERS) return;
     const offerId = crypto.randomUUID();
-    const link = this.createConnection(offerId);
-    link.remotePeerId = target;
+    const link = this.createConnection(offerId, target);
     const channel = link.pc.createDataChannel("p2p-share", { ordered: true });
     this.attachChannel(link, channel);
     await link.pc.setLocalDescription(await link.pc.createOffer());
@@ -333,8 +354,7 @@ export class PeerMesh extends EventTarget {
   ) {
     if (!this.prepareForIncomingOffer(inviter)) return;
     if (this.routeCount >= MAX_DIRECT_PEERS) return;
-    const link = this.createConnection(offerId);
-    link.remotePeerId = inviter;
+    const link = this.createConnection(offerId, inviter);
     await link.pc.setRemoteDescription(description);
     await link.pc.setLocalDescription(await link.pc.createAnswer());
     await waitForIceGathering(link.pc);
@@ -366,8 +386,7 @@ export class PeerMesh extends EventTarget {
   ) {
     if (!this.prepareForIncomingOffer(inviter)) return;
     if (this.routeCount >= MAX_DIRECT_PEERS) return;
-    const link = this.createConnection(offerId);
-    link.remotePeerId = inviter;
+    const link = this.createConnection(offerId, inviter);
     await link.pc.setRemoteDescription(description);
     await link.pc.setLocalDescription(await link.pc.createAnswer());
     await waitForIceGathering(link.pc);
@@ -412,8 +431,7 @@ export class PeerMesh extends EventTarget {
   async acceptInvite(token: string): Promise<string> {
     const signal = await decodeSignal(token);
     if (signal.kind !== "invite" || signal.roomId !== this.roomId) throw new Error("Invite room mismatch.");
-    const link = this.createConnection(signal.offerId);
-    link.remotePeerId = signal.inviter;
+    const link = this.createConnection(signal.offerId, signal.inviter);
     await link.pc.setRemoteDescription(signal.description);
     await link.pc.setLocalDescription(await link.pc.createAnswer());
     await waitForIceGathering(link.pc);

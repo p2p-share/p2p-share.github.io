@@ -17,41 +17,99 @@ try {
     const payload = await response.json();
     if (!Array.isArray(payload.iceServers)) throw new Error("Credential response has no ICE servers.");
 
-    const connection = new globalThis.RTCPeerConnection({
-      iceServers: payload.iceServers,
-      iceTransportPolicy: "relay",
+    const turnServer = payload.iceServers.find((server) =>
+      (Array.isArray(server.urls) ? server.urls : [server.urls])
+        .some((url) => /^turns?:/.test(url)),
+    );
+    if (!turnServer) throw new Error("Credential response has no TURN server.");
+    const turnUrls = (Array.isArray(turnServer.urls) ? turnServer.urls : [turnServer.urls])
+      .filter((url) => !/:53(?:\?|$)/.test(url));
+    const requiredRoutes = {
+      udp3478: turnUrls.find((url) => /:3478\?transport=udp$/.test(url)),
+      tcp80: turnUrls.find((url) => /:80\?transport=tcp$/.test(url)),
+      tls443: turnUrls.find((url) => /^turns:.*:443\?transport=tcp$/.test(url)),
+    };
+    if (Object.values(requiredRoutes).some((url) => !url)) {
+      throw new Error(`Cloudflare response is missing a required corporate fallback: ${JSON.stringify(requiredRoutes)}`);
+    }
+
+    async function gatherRelay(url) {
+      const connection = new globalThis.RTCPeerConnection({
+        iceServers: [{ ...turnServer, urls: [url] }],
+        iceTransportPolicy: "relay",
+      });
+      connection.createDataChannel("turn-candidate-smoke");
+      const iceErrors = [];
+      connection.addEventListener("icecandidateerror", (event) => {
+        iceErrors.push(`${event.url || "ICE server"}: ${event.errorCode} ${event.errorText}`);
+      });
+      const candidate = new Promise((resolve) => {
+        connection.addEventListener("icecandidate", (event) => {
+          if (event.candidate?.type === "relay") resolve(event.candidate.candidate);
+        });
+      });
+      await connection.setLocalDescription(await connection.createOffer());
+      const relayCandidate = await Promise.race([
+        candidate,
+        new Promise((_, reject) => {
+          globalThis.setTimeout(() => reject(new Error(
+            `No relay candidate for ${url}. ICE errors: ${iceErrors.join(" | ") || "none"}.`,
+          )), 20_000);
+        }),
+      ]);
+      connection.close();
+      return relayCandidate;
+    }
+
+    const routeResults = {};
+    for (const [name, url] of Object.entries(requiredRoutes)) {
+      await gatherRelay(url);
+      routeResults[name] = "relay";
+    }
+
+    const tlsServer = [{ ...turnServer, urls: [requiredRoutes.tls443] }];
+    const left = new globalThis.RTCPeerConnection({ iceServers: tlsServer, iceTransportPolicy: "relay" });
+    const right = new globalThis.RTCPeerConnection({ iceServers: tlsServer, iceTransportPolicy: "relay" });
+    const sender = left.createDataChannel("turn-end-to-end");
+    const received = new Promise((resolve) => {
+      right.addEventListener("datachannel", (event) => {
+        event.channel.addEventListener("message", (message) => resolve(message.data));
+      });
     });
-    connection.createDataChannel("turn-smoke");
-    const relayCandidates = [];
-    const candidateTypes = [];
-    const iceErrors = [];
-    let resolveRelay;
-    const relayReady = new Promise((resolve) => { resolveRelay = resolve; });
-    connection.addEventListener("icecandidate", (event) => {
-      if (event.candidate?.type) candidateTypes.push(event.candidate.type);
-      if (event.candidate?.type === "relay") {
-        relayCandidates.push(event.candidate.candidate);
-        resolveRelay();
-      }
+    const connected = new Promise((resolve, reject) => {
+      const timeout = globalThis.setTimeout(
+        () => reject(new Error("TLS 443 relay candidates did not establish a peer route.")),
+        25_000,
+      );
+      sender.addEventListener("open", () => {
+        globalThis.clearTimeout(timeout);
+        resolve();
+      });
     });
-    connection.addEventListener("icecandidateerror", (event) => {
-      iceErrors.push(`${event.url || "ICE server"}: ${event.errorCode} ${event.errorText}`);
-    });
-    await connection.setLocalDescription(await connection.createOffer());
-    await Promise.race([
-      relayReady,
-      new Promise((_, reject) => {
-        globalThis.setTimeout(() => reject(new Error(
-          `Timed out waiting for a Cloudflare TURN relay candidate. Candidate types: ${candidateTypes.join(", ") || "none"}. ICE errors: ${iceErrors.join(" | ") || "none"}.`,
-        )), 30_000);
-      }),
-    ]);
-    connection.close();
-    if (!relayCandidates.length) throw new Error("Cloudflare returned credentials, but Chrome gathered no relay candidate.");
+    const waitForGathering = (connection) => connection.iceGatheringState === "complete"
+      ? Promise.resolve()
+      : new Promise((resolve) => connection.addEventListener("icegatheringstatechange", () => {
+        if (connection.iceGatheringState === "complete") resolve();
+      }));
+    await left.setLocalDescription(await left.createOffer());
+    await waitForGathering(left);
+    await right.setRemoteDescription(left.localDescription);
+    await right.setLocalDescription(await right.createAnswer());
+    await waitForGathering(right);
+    await left.setRemoteDescription(right.localDescription);
+    await connected;
+    sender.send("cloudflare-turn-ok");
+    const message = await received;
+    left.close();
+    right.close();
+    if (message !== "cloudflare-turn-ok") throw new Error("TLS 443 relay data was not delivered accurately.");
+
     return {
       credentialStatus: response.status,
       iceServerCount: payload.iceServers.length,
-      relayCandidateCount: relayCandidates.length,
+      routes: routeResults,
+      tls443PeerRoute: "connected",
+      dataIntegrity: "verified",
     };
   }, credentialsUrl);
   globalThis.console.log(JSON.stringify(result, null, 2));
