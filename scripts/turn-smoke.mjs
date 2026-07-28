@@ -34,6 +34,7 @@ try {
     }
 
     async function gatherRelay(url) {
+      const startedAt = globalThis.performance.now();
       const connection = new globalThis.RTCPeerConnection({
         iceServers: [{ ...turnServer, urls: [url] }],
         iceTransportPolicy: "relay",
@@ -58,13 +59,16 @@ try {
         }),
       ]);
       connection.close();
-      return relayCandidate;
+      return {
+        candidate: relayCandidate,
+        elapsedMs: Math.round(globalThis.performance.now() - startedAt),
+      };
     }
 
     const routeResults = {};
     for (const [name, url] of Object.entries(requiredRoutes)) {
-      await gatherRelay(url);
-      routeResults[name] = "relay";
+      const route = await gatherRelay(url);
+      routeResults[name] = { status: "relay", elapsedMs: route.elapsedMs };
     }
 
     const tlsServer = [{ ...turnServer, urls: [requiredRoutes.tls443] }];
@@ -91,6 +95,7 @@ try {
       : new Promise((resolve) => connection.addEventListener("icegatheringstatechange", () => {
         if (connection.iceGatheringState === "complete") resolve();
       }));
+    const peerRouteStartedAt = globalThis.performance.now();
     await left.setLocalDescription(await left.createOffer());
     await waitForGathering(left);
     await right.setRemoteDescription(left.localDescription);
@@ -109,6 +114,7 @@ try {
       iceServerCount: payload.iceServers.length,
       routes: routeResults,
       tls443PeerRoute: "connected",
+      tls443PeerRouteMs: Math.round(globalThis.performance.now() - peerRouteStartedAt),
       dataIntegrity: "verified",
     };
   }, credentialsUrl);

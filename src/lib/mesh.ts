@@ -61,7 +61,7 @@ const MAX_FRAGMENT = 24 * 1024;
 const HIGH_WATER = 8 * 1024 * 1024;
 const LOW_WATER = 2 * 1024 * 1024;
 const BINARY_MAGIC = new Uint8Array([0x50, 0x32, 0x50, 0x46]);
-const AUTOMATIC_OFFER_TIMEOUT_MS = 30_000;
+const AUTOMATIC_OFFER_TIMEOUT_MS = 12_000;
 export const MAX_DIRECT_PEERS = 16;
 
 export class PeerMesh extends EventTarget {
@@ -169,7 +169,7 @@ export class PeerMesh extends EventTarget {
     const relayOnly = Boolean(remotePeerId && this.relayOnlyPeers.has(remotePeerId));
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers,
-      iceCandidatePoolSize: 10,
+      iceCandidatePoolSize: 2,
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
       iceTransportPolicy: relayOnly ? "relay" : "all",
