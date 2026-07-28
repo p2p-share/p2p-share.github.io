@@ -2,6 +2,7 @@ const CLOUDFLARE_TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
 
 type WorkerEnv = {
   ALLOWED_ORIGIN?: string;
+  ALLOWED_ORIGINS?: string;
   TURN_CREDENTIAL_TTL?: string;
   TURN_KEY_ID?: string;
   TURN_API_TOKEN?: string;
@@ -41,10 +42,14 @@ export async function handleRequest(
   fetchImpl: typeof fetch = fetch,
 ) {
   const requestOrigin = request.headers.get("Origin") || "";
-  const allowedOrigin = env.ALLOWED_ORIGIN || "https://p2p-share.github.io";
-  if (requestOrigin !== allowedOrigin) {
-    return json({ error: "Origin is not allowed." }, 403, allowedOrigin);
+  const allowedOrigins = (env.ALLOWED_ORIGINS || env.ALLOWED_ORIGIN || "https://p2p-share.github.io")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (!allowedOrigins.includes(requestOrigin)) {
+    return json({ error: "Origin is not allowed." }, 403, allowedOrigins[0]);
   }
+  const allowedOrigin = requestOrigin;
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(allowedOrigin) });
   }

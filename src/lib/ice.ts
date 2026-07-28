@@ -1,36 +1,9 @@
-const DEFAULT_STUN_SERVERS: RTCIceServer[] = [{
+export const CLOUDFLARE_STUN_FALLBACK: RTCIceServer[] = [{
   urls: [
-    "stun:stun.relay.metered.ca:80",
-    "stun:stun.l.google.com:19302",
-    "stun:stun1.l.google.com:19302",
-    "stun:stun2.l.google.com:19302",
-    "stun:stun3.l.google.com:19302",
+    "stun:stun.cloudflare.com:3478",
+    "stun:stun.cloudflare.com:53",
   ],
 }];
-
-export function parseTurnServers(
-  urlsValue?: string,
-  username?: string,
-  credential?: string,
-): RTCIceServer[] {
-  const urls = (urlsValue || "")
-    .split(",")
-    .map((url) => url.trim())
-    .filter((url) => /^turns?:/i.test(url));
-  if (!urls.length || !username || !credential) return [];
-  return [{ urls, username, credential }];
-}
-
-const turnServers = parseTurnServers(
-  import.meta.env.VITE_TURN_URLS,
-  import.meta.env.VITE_TURN_USERNAME,
-  import.meta.env.VITE_TURN_CREDENTIAL,
-);
-
-export const WEBRTC_ICE_SERVERS: RTCIceServer[] = [
-  ...DEFAULT_STUN_SERVERS,
-  ...turnServers,
-];
 
 type IceServerResponse = {
   iceServers?: unknown;
@@ -65,7 +38,7 @@ let iceServerRequest: Promise<RTCIceServer[]> | undefined;
 export function loadIceServers() {
   if (iceServerRequest) return iceServerRequest;
   const endpoint = import.meta.env.VITE_TURN_CREDENTIALS_URL;
-  if (!endpoint) return Promise.resolve(WEBRTC_ICE_SERVERS);
+  if (!endpoint) return Promise.resolve(CLOUDFLARE_STUN_FALLBACK);
   iceServerRequest = (async () => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 6_000);
@@ -90,7 +63,7 @@ export function loadIceServers() {
       return remote;
     } catch (error) {
       console.warn("[p2p-share] TURN credentials unavailable; using direct STUN routes.", error);
-      return WEBRTC_ICE_SERVERS;
+      return CLOUDFLARE_STUN_FALLBACK;
     } finally {
       window.clearTimeout(timeout);
     }

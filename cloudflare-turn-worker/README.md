@@ -18,5 +18,6 @@ Pages client. It returns only short-lived ICE credentials and stores nothing.
 
 For production abuse protection, add a Cloudflare rate-limiting rule for this
 Worker route. The Worker already restricts browser calls to
-`https://p2p-share.github.io`, permits only GET/OPTIONS, bounds credential TTL
-to 5 minutes–24 hours, and never caches credentials.
+`https://p2p-share.github.io` plus the two explicit Vite development origins,
+permits only GET/OPTIONS, bounds credential TTL to 5 minutes–24 hours, and
+never caches credentials.

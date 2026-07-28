@@ -3,5 +3,5 @@ main = "src/index.ts"
 compatibility_date = "2026-07-28"
 
 [vars]
-ALLOWED_ORIGIN = "https://p2p-share.github.io"
+ALLOWED_ORIGINS = "https://p2p-share.github.io,http://localhost:5173,http://127.0.0.1:5173"
 TURN_CREDENTIAL_TTL = "3600"

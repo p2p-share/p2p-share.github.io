@@ -39,7 +39,7 @@ The browser fetches a fresh credential set once per page lifetime with a six-sec
 
 WebRTC tries direct host and STUN paths first and can fall back to Cloudflare TURN over UDP, TCP, or TLS. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
 
-Static `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL` settings remain supported as a compatibility fallback, but they become visible in the public JavaScript bundle and are not recommended for permanent credentials.
+Cloudflare is the only TURN provider used by the application. No permanent TURN username or credential is accepted by the client or included in the GitHub Pages bundle. If the credential Worker is temporarily unavailable, the client falls back only to Cloudflare’s public STUN endpoints and continues retrying direct routes.
 
 Consumed signaling documents and intentional participant departures are deleted by the browser. Firestore TTL is intentionally not enabled in `firestore.indexes.json` because managed TTL deletion requires billing. Projects on the Blaze plan can opt in by adding TTL policies for the `expiresAt` field on the `rooms` and `signals` collection groups.
 

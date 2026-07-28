@@ -1,24 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { parseTurnServers } from "../src/lib/ice";
+import { CLOUDFLARE_STUN_FALLBACK, normalizeIceServers } from "../src/lib/ice";
 
 describe("WebRTC ICE configuration", () => {
-  it("accepts multiple TURN transports as one authenticated server", () => {
-    expect(parseTurnServers(
-      "turn:relay.example.test:3478?transport=udp, turns:relay.example.test:5349?transport=tcp",
-      "room-user",
-      "temporary-secret",
-    )).toEqual([{
+  it("uses only Cloudflare STUN when short-lived credentials are unavailable", () => {
+    expect(CLOUDFLARE_STUN_FALLBACK).toEqual([{
       urls: [
-        "turn:relay.example.test:3478?transport=udp",
-        "turns:relay.example.test:5349?transport=tcp",
+        "stun:stun.cloudflare.com:3478",
+        "stun:stun.cloudflare.com:53",
       ],
-      username: "room-user",
-      credential: "temporary-secret",
     }]);
   });
 
-  it("does not expose an incomplete or non-TURN configuration", () => {
-    expect(parseTurnServers("turn:relay.example.test:3478", "", "secret")).toEqual([]);
-    expect(parseTurnServers("https://example.test", "user", "secret")).toEqual([]);
+  it("accepts authenticated Cloudflare TURN responses", () => {
+    expect(normalizeIceServers([{
+      urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "short-lived-user",
+      credential: "short-lived-credential",
+    }])).toHaveLength(1);
+  });
+
+  it("rejects TURN routes without short-lived credentials", () => {
+    expect(normalizeIceServers([{
+      urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+    }])).toEqual([]);
   });
 });

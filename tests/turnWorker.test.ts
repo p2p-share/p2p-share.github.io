@@ -3,7 +3,7 @@ import { handleRequest } from "../cloudflare-turn-worker/src/index";
 
 const origin = "https://p2p-share.github.io";
 const env = {
-  ALLOWED_ORIGIN: origin,
+  ALLOWED_ORIGINS: `${origin},http://localhost:5173`,
   TURN_CREDENTIAL_TTL: "3600",
   TURN_KEY_ID: "key-id",
   TURN_API_TOKEN: "server-secret",
@@ -43,6 +43,23 @@ describe("Cloudflare TURN credential Worker", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.json()).toEqual({ iceServers });
+  });
+
+  it("allows the explicit local Vite development origin", async () => {
+    const upstream = vi.fn(async () => new Response(JSON.stringify({
+      iceServers: [{
+        urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+        username: "temporary-user",
+        credential: "temporary-credential",
+      }],
+    }), { status: 201 }));
+    const response = await handleRequest(
+      new Request("https://worker.example/", { headers: { Origin: "http://localhost:5173" } }),
+      env,
+      upstream,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
   });
 
   it("does not expose provider errors or secrets", async () => {

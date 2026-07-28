@@ -2,7 +2,7 @@ import { decryptBytes, encryptBytes } from "./crypto";
 import { decodeJson, encodeJson } from "./encoding";
 import { recommendedTransferChunkSize } from "./fileTransfer";
 import { shouldAcceptIncomingOffer } from "./overlay";
-import { WEBRTC_ICE_SERVERS } from "./ice";
+import { CLOUDFLARE_STUN_FALLBACK } from "./ice";
 import {
   decodeSignal,
   encodeSignal,
@@ -77,7 +77,7 @@ export class PeerMesh extends EventTarget {
   constructor(
     readonly roomId: string,
     key?: CryptoKey,
-    private readonly iceServers: RTCIceServer[] = WEBRTC_ICE_SERVERS,
+    private readonly iceServers: RTCIceServer[] = CLOUDFLARE_STUN_FALLBACK,
   ) {
     super();
     this.key = key;
