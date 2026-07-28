@@ -79,7 +79,7 @@ export function LandingPage({
   onCreate,
   onOpen,
 }: {
-  onCreate: () => void;
+  onCreate: (customRoomId?: string) => string | undefined | void;
   onOpen: (value: string, password?: string) => string | undefined;
 }) {
   const [room, setRoom] = useState("");
@@ -88,6 +88,10 @@ export function LandingPage({
   const recent = useMemo(loadRecentProjects, []);
   const join = () => {
     const message = onOpen(room, password);
+    if (message) setError(message);
+  };
+  const createCustom = () => {
+    const message = onCreate(room);
     if (message) setError(message);
   };
 
@@ -102,7 +106,7 @@ export function LandingPage({
           <a href="#features">Features</a>
           <a href="#privacy">Privacy</a>
           <a href="https://github.com/p2p-share/p2p-share.github.io" target="_blank" rel="noreferrer"><Icon name="github" />GitHub</a>
-          <button className="landing-nav-cta" onClick={onCreate}>Create room</button>
+          <button className="landing-nav-cta" onClick={() => onCreate()}>Create room</button>
         </div>
       </nav>
 
@@ -112,7 +116,7 @@ export function LandingPage({
           <h1>Code, talk and share files—directly with your peers.</h1>
           <p>p2p-share is a private, multi-peer coding workspace that runs from GitHub Pages. Collaborate in real time, execute code, review changes, call your team and transfer large files without uploading project data to a storage server.</p>
           <div className="hero-actions">
-            <button className="landing-primary" onClick={onCreate}><Icon name="plus" />Create a new room</button>
+            <button className="landing-primary" onClick={() => onCreate()}><Icon name="plus" />Create a new room</button>
             <a className="landing-secondary" href="#join"><Icon name="users" />Join a room</a>
           </div>
           <div className="hero-trust">
@@ -137,11 +141,15 @@ export function LandingPage({
 
       <section className="landing-join" id="join">
         <div><span className="landing-kicker">Already invited?</span><h2>Enter a room in seconds</h2><p>Paste a p2p-share link or enter its short room ID.</p></div>
-        <div className="join-control">
-          <label htmlFor="landing-room" className="sr-only">Invite link or room ID</label>
-          <input id="landing-room" value={room} onChange={(event) => { setRoom(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Room ID or invite link" />
-          <button onClick={join}>Join room <Icon name="chevron" /></button>
+        <div className="join-entry">
+          <div className="join-control">
+            <label htmlFor="landing-room" className="sr-only">Invite link or room ID</label>
+            <input id="landing-room" value={room} onChange={(event) => { setRoom(event.target.value); setError(""); }} onKeyDown={(event) => event.key === "Enter" && join()} placeholder="Room ID or invite link" />
+            <button onClick={join}>Join room <Icon name="chevron" /></button>
+          </div>
           {error && <p role="alert">{error}</p>}
+          <button className="custom-room-button" onClick={createCustom}><Icon name="plus" />Create using this custom ID</button>
+          <small>Custom IDs support 3–64 letters, numbers, underscores, or hyphens.</small>
         </div>
         <div className="join-password">
           <label htmlFor="landing-password">Room password <span>optional</span></label>
@@ -197,7 +205,7 @@ export function LandingPage({
         <img src="./logo.png" alt="" />
         <h2>Start collaborating without handing over your code.</h2>
         <p>Create a room, choose your name and invite your peers.</p>
-        <button onClick={onCreate}><Icon name="plus" />Create a private room</button>
+        <button onClick={() => onCreate()}><Icon name="plus" />Create a private room</button>
       </section>
 
       <footer className="landing-footer">

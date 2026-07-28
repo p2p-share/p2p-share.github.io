@@ -1493,7 +1493,42 @@ textarea:focus-visible {
 }
 
 .join-control button svg { width: 13px; }
-.join-control p { position: absolute; top: 53px; left: 2px; color: #ff8a9e; font-size: 10px; }
+.join-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.join-entry > p {
+  color: #ff8a9e;
+  font-size: 10px;
+}
+
+.join-entry > small {
+  color: #6f7482;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.join-entry .custom-room-button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #353846;
+  border-radius: 7px;
+  color: #b9bdca;
+  background: #13151b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.join-entry .custom-room-button:hover {
+  color: #fff;
+  border-color: #6559d9;
+}
+
+.join-entry .custom-room-button svg { width: 12px; }
 
 .join-password {
   display: grid;

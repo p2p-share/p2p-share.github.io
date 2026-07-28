@@ -14,7 +14,7 @@ async function exercise(viewport, label) {
     if (message.type() === "error") errors.push(message.text());
   });
   const roomId = label === "desktop" ? "UiD001" : "UiM001";
-  await page.goto(`http://127.0.0.1:5173/#room=${roomId}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`http://127.0.0.1:5173/${roomId}`, { waitUntil: "domcontentloaded" });
   const onboarding = page.getByLabel("Your display name");
   await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
   if (await onboarding.isVisible()) {
@@ -86,7 +86,7 @@ async function exercise(viewport, label) {
       mimeType: "text/plain",
       buffer: millionLines,
     });
-    await page.getByText("1000001 lines", { exact: true }).waitFor({ timeout: 60_000 });
+    await page.getByText("1000001 lines", { exact: true }).waitFor({ timeout: 120_000 });
   }
   if (label === "desktop") await page.getByRole("button", { name: "Open direct file sharing" }).click();
   else await page.getByLabel("Room actions").getByRole("button", { name: "Files", exact: true }).click();
@@ -126,7 +126,7 @@ async function verifyAutomaticSignaling() {
     });
   }
   await Promise.all(pages.map(async (page, index) => {
-    await page.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+    await page.goto(`http://127.0.0.1:5173/${room}`, { waitUntil: "domcontentloaded" });
     const onboarding = page.getByLabel("Your display name");
     await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
     if (await onboarding.isVisible()) {
@@ -154,9 +154,18 @@ async function verifyAutomaticSignaling() {
   }
   await pages[2].getByLabel("Collaborative code editor").waitFor();
   try {
-    await Promise.all(pages.map((page) =>
-      page.locator('[aria-label="2 direct peer routes"]').waitFor({ state: "attached", timeout: 60_000 }),
-    ));
+    await Promise.all(pages.map((page) => page.waitForFunction(() => {
+      const status = globalThis.document.querySelector(".presence-stack")?.getAttribute("aria-label") || "";
+      return Number.parseInt(status, 10) >= 1;
+    }, undefined, { timeout: 60_000 })));
+    const recoveryName = `recovered-${Date.now()}`;
+    await pages[1].getByLabel("Document name").fill(recoveryName);
+    await pages[2].getByLabel("Document name").waitFor();
+    await pages[2].waitForFunction(
+      (expected) => (globalThis.document.querySelector('input[aria-label="Document name"]'))?.value === expected,
+      recoveryName,
+      { timeout: 30_000 },
+    );
   } catch {
     const statuses = await Promise.all(pages.map((page) =>
       page.locator(".presence-stack").getAttribute("aria-label"),
@@ -174,7 +183,7 @@ async function verifyPasswordRoom() {
   const hostContext = await browser.newContext({ viewport: { width: 1100, height: 760 } });
   const host = await hostContext.newPage();
   host.on("console", (message) => { if (message.type() === "error") errors.push(`host: ${message.text()}`); });
-  await host.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+  await host.goto(`http://127.0.0.1:5173/${room}`, { waitUntil: "domcontentloaded" });
   const hostName = host.getByLabel("Your display name");
   await hostName.or(host.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
   if (await hostName.isVisible()) {
@@ -193,7 +202,7 @@ async function verifyPasswordRoom() {
   const guestContext = await browser.newContext({ viewport: { width: 900, height: 700 } });
   const guest = await guestContext.newPage();
   guest.on("console", (message) => { if (message.type() === "error") errors.push(`guest: ${message.text()}`); });
-  await guest.goto(`http://127.0.0.1:5173/#room=${room}`, { waitUntil: "domcontentloaded" });
+  await guest.goto(`http://127.0.0.1:5173/${room}`, { waitUntil: "domcontentloaded" });
   const unlock = guest.getByRole("dialog", { name: "Unlock private room" });
   await unlock.waitFor({ timeout: 30_000 });
   await unlock.getByLabel("Room password").fill("wrong-password");

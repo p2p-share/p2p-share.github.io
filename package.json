@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "test:ui": "node scripts/ui-smoke.mjs",
     "test:landing": "node scripts/landing-smoke.mjs",
+    "test:routes": "node scripts/route-smoke.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

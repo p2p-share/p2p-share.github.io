@@ -10,13 +10,13 @@
 
 A private, static, peer-to-peer code room hosted by GitHub Pages. It combines a CodeMirror editor, Yjs conflict-free collaboration, direct WebRTC data channels, Firebase-assisted peer discovery, optional password-derived AES-256-GCM encryption, arbitrary file transfer, and browser-local recovery.
 
-The root URL opens a responsive product landing page with six-character alphanumeric room creation, room-ID or invitation joining, an optional protected-room password field, recent local projects, the complete feature catalogue, privacy details, and direct room-link routing. Room and invitation hashes bypass the landing page and open the workspace immediately.
+The root URL opens a responsive product landing page with generated or custom room creation, room-ID or invitation joining, an optional protected-room password field, recent local projects, the complete feature catalogue, privacy details, and direct room-link routing. Clean room paths and legacy room or invitation hashes bypass the landing page and open the workspace immediately.
 
 ## What “serverless” means here
 
 p2p-share uses Firebase Authentication and Cloud Firestore only to discover peers and exchange temporary WebRTC session descriptions. Code, files, chat, editor state, and media are never written to Firebase; they travel directly between peers and can be recovered from browser-local storage. A public STUN server assists NAT discovery. No TURN relay is currently configured.
 
-Opening a compact room link with a six-character alphanumeric room ID starts automatic multi-peer discovery. Existing longer room IDs remain compatible:
+Opening a compact clean-path room link such as `https://p2p-share.github.io/teZAT6` starts automatic multi-peer discovery. Generated IDs contain six alphanumeric characters; custom IDs accept 3–64 letters, numbers, underscores, or hyphens. Existing `#room=` links remain compatible:
 
 1. The visitor receives an anonymous Firebase identity.
 2. The browser registers an ephemeral participant in the room.
@@ -114,7 +114,7 @@ Audio and video use WebRTC media tracks over the same direct peer connections as
 
 Read-only and editable modes are enforced by the official p2p-share client. Because this is a decentralized static application without a trusted authorization server, they are cooperative client permissions rather than protection against a deliberately modified client. Password encryption is the security boundary for confidential room content.
 
-During active calls and file transfers, p2p-share requests the Screen Wake Lock API where supported. Signaling listeners automatically rejoin after network recovery, BFCache restoration, or tab visibility restoration, and transient WebRTC disconnections receive a grace period before connections are rebuilt. Mobile operating systems can still suspend browser execution completely; a static PWA or service worker cannot guarantee a live WebRTC connection while the OS has suspended the page.
+During active calls and file transfers, p2p-share requests the Screen Wake Lock API where supported. Returning to a visible tab refreshes presence without destroying healthy routes. An eight-second overlay health check repairs missing neighbors locally, transient WebRTC disconnections receive a 15-second grace period, simultaneous repair offers use deterministic glare resolution, and unanswered automatic offers are removed after 30 seconds. Two STUN endpoints are requested from the same public provider for DNS and endpoint resilience. Mobile operating systems can still suspend browser execution completely; a static PWA or service worker cannot guarantee a live WebRTC connection while the OS has suspended the page.
 
 Simple JavaScript and TypeScript execute in a disposable Web Worker with a five-second timeout and network APIs disabled. Python uses Pyodide, Ruby uses ruby.wasm, PHP uses PHP Wasm, Lua uses Fengari, R uses WebR, SQL uses an in-memory SQLite Wasm database, and C/C++ use Wasm Clang. Node.js projects with a `package.json` use WebContainers, while frontend projects use Sandpack. Runtime payloads are lazy-loaded on first use; C/C++, R, Ruby, and Python can have substantial first-run downloads. CheerpJ is identified for compiled Java `.class`/`.jar` artifacts, but Java source compilation is not currently provided.
 
@@ -182,7 +182,15 @@ npm run build
 3. Every push to `master` now runs linting, tests, the production build, and deployment.
    You can also manually run **Build and deploy GitHub Pages** from the Actions tab.
 
-Vite uses a relative asset base, so the build works both at a user/organization domain and under a repository subpath.
+The production build uses root-relative assets and copies the compiled SPA entry to `404.html`. This is the GitHub Pages fallback that lets a first visit to `/teZAT6` boot the room while retaining the clean URL. This repository targets the root user site `https://p2p-share.github.io`; change the Vite base and `<base>` element before deploying under a repository subpath.
+
+After changing `firestore.rules`, deploy the signaling rules separately:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+The current rules allow signed-in clients to remove participant records only after they have been stale for ten minutes. This distributed cleanup prevents abandoned participant documents from permanently occupying bounded discovery queries.
 
 ## Browser support
 

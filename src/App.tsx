@@ -129,13 +129,20 @@ function newRoomId() {
 }
 
 function parseHash() {
-  return new URLSearchParams(location.hash.replace(/^#/, ""));
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const query = new URLSearchParams(location.search);
+  if (!params.has("access") && query.has("access")) params.set("access", query.get("access")!);
+  if (!params.has("room") && !params.has("invite")) {
+    const path = decodeURIComponent(location.pathname).replace(/^\/+|\/+$/g, "");
+    if (/^[A-Za-z0-9_-]{3,64}$/.test(path)) params.set("room", path);
+  }
+  return params;
 }
 
 function roomUrl(roomId: string, access?: AccessMode) {
-  const params = new URLSearchParams({ room: roomId });
-  if (access) params.set("access", access);
-  return `${location.origin}${location.pathname}#${params}`;
+  const url = new URL(`/${encodeURIComponent(roomId)}`, location.origin);
+  if (access) url.searchParams.set("access", access);
+  return url.toString();
 }
 
 function randomGuestName() {
@@ -1540,8 +1547,7 @@ export function App() {
     ) {
       return;
     }
-    location.href = `${location.pathname}#room=${newRoomId()}`;
-    location.reload();
+    location.href = roomUrl(newRoomId());
   };
 
   const savePreferences = () => {
@@ -1830,25 +1836,35 @@ export function App() {
   const navigateToRoom = (value: string, password?: string) => {
     const input = value.trim();
     if (!input) return "Enter a room ID or invite link.";
-    let nextHash: string;
     try {
+      let roomId: string | undefined;
+      let inviteToken: string | undefined;
+      let access: AccessMode | undefined;
       if (/^https?:\/\//i.test(input)) {
         const url = new URL(input);
-        if (!url.hash || (!url.hash.includes("room=") && !url.hash.includes("invite="))) {
-          return "This link does not contain a p2p-share room or invitation.";
-        }
-        nextHash = url.hash;
+        const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+        inviteToken = hash.get("invite") || undefined;
+        roomId = hash.get("room") || decodeURIComponent(url.pathname).replace(/^\/+|\/+$/g, "") || undefined;
+        const requestedAccess = hash.get("access") || url.searchParams.get("access");
+        access = requestedAccess === "read" ? "read" : requestedAccess === "edit" ? "edit" : undefined;
       } else if (input.startsWith("#")) {
-        nextHash = input;
+        const hash = new URLSearchParams(input.replace(/^#/, ""));
+        inviteToken = hash.get("invite") || undefined;
+        roomId = hash.get("room") || undefined;
+        const requestedAccess = hash.get("access");
+        access = requestedAccess === "read" ? "read" : requestedAccess === "edit" ? "edit" : undefined;
       } else {
-        const roomId = input.replace(/^room=/, "");
-        if (!/^[A-Za-z0-9_-]{6,64}$/.test(roomId)) return "Enter a 6-character room ID or p2p-share invitation link.";
-        nextHash = `#room=${encodeURIComponent(roomId)}`;
+        roomId = input.replace(/^room=/, "");
       }
-      const roomId = new URLSearchParams(nextHash.replace(/^#/, "")).get("room");
-      if (password && roomId) sessionStorage.setItem(`p2p-share:pending-password:${roomId}`, password);
-      location.hash = nextHash.replace(/^#/, "");
-      location.reload();
+      if (inviteToken) {
+        location.href = `${location.origin}/#invite=${encodeURIComponent(inviteToken)}`;
+        return;
+      }
+      if (!roomId || !/^[A-Za-z0-9_-]{3,64}$/.test(roomId)) {
+        return "Use 3–64 letters, numbers, underscores, or hyphens for the room ID.";
+      }
+      if (password) sessionStorage.setItem(`p2p-share:pending-password:${roomId}`, password);
+      location.href = roomUrl(roomId, access);
       return;
     } catch {
       return "Enter a valid room ID or p2p-share invitation link.";
@@ -1858,12 +1874,15 @@ export function App() {
   if (landingOpen) {
     return (
       <LandingPage
-        onCreate={() => {
-          const roomId = newRoomId();
+        onCreate={(customRoomId) => {
+          const roomId = customRoomId?.trim() || newRoomId();
+          if (!/^[A-Za-z0-9_-]{3,64}$/.test(roomId)) {
+            return "Use 3–64 letters, numbers, underscores, or hyphens for a custom room ID.";
+          }
           sessionStorage.setItem(`p2p-share:created-room:${roomId}`, "yes");
           setLandingOpen(false);
-          location.hash = `room=${roomId}`;
-          location.reload();
+          location.href = roomUrl(roomId);
+          return;
         }}
         onOpen={navigateToRoom}
       />
