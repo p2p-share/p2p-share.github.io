@@ -32,7 +32,7 @@ export async function decodeSignal(token: string): Promise<InviteToken | AnswerT
   return value;
 }
 
-export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 8000): Promise<void> {
+export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 15_000): Promise<void> {
   if (pc.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((resolve) => {
     const timeout = window.setTimeout(done, timeoutMs);

@@ -2,6 +2,7 @@ import { decryptBytes, encryptBytes } from "./crypto";
 import { decodeJson, encodeJson } from "./encoding";
 import { recommendedTransferChunkSize } from "./fileTransfer";
 import { shouldAcceptIncomingOffer } from "./overlay";
+import { TURN_RELAY_CONFIGURED, WEBRTC_ICE_SERVERS } from "./ice";
 import {
   decodeSignal,
   encodeSignal,
@@ -148,13 +149,10 @@ export class PeerMesh extends EventTarget {
 
   private createConnection(id: string): Link {
     const pc = new RTCPeerConnection({
-      iceServers: [{
-        urls: [
-          "stun:stun.l.google.com:19302",
-          "stun:stun1.l.google.com:19302",
-        ],
-      }],
-      iceCandidatePoolSize: 4,
+      iceServers: WEBRTC_ICE_SERVERS,
+      iceCandidatePoolSize: 10,
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
     });
     const link: Link = { id, pc };
     const audio = pc.addTransceiver("audio", { direction: "sendrecv" });
@@ -180,12 +178,13 @@ export class PeerMesh extends EventTarget {
       if (["failed", "closed"].includes(pc.connectionState)) {
         this.removeLink(link, pc.connectionState === "failed");
         if (pc.connectionState === "failed" && !this.closing) {
-          this.dispatchEvent(
-            new CustomEvent("error", {
-              detail:
-                "Direct connection failed. The peers may be behind restrictive NAT or firewall rules.",
-            }),
-          );
+          if (!link.remotePeerId) {
+            this.dispatchEvent(new CustomEvent("error", {
+              detail: TURN_RELAY_CONFIGURED
+                ? "The peer route failed through both direct and TURN relay candidates. Retrying may select another route."
+                : "Direct connection failed. This network may require a TURN relay; automatic rooms will keep retrying.",
+            }));
+          }
         }
       }
       if (pc.connectionState === "disconnected") {
@@ -235,7 +234,6 @@ export class PeerMesh extends EventTarget {
     if (
       repair
       && !this.closing
-      && link.opened
       && !link.lostNotified
       && link.remotePeerId
     ) {

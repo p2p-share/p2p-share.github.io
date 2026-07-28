@@ -40,6 +40,10 @@ jobs:
 
       - name: Build production site
         run: npm run build
+        env:
+          VITE_TURN_URLS: ${{ vars.VITE_TURN_URLS }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

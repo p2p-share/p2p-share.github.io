@@ -14,7 +14,7 @@ The root URL opens a responsive product landing page with generated or custom ro
 
 ## What “serverless” means here
 
-p2p-share uses Firebase Authentication and Cloud Firestore only to discover peers and exchange temporary WebRTC session descriptions. Code, files, chat, editor state, and media are never written to Firebase; they travel directly between peers and can be recovered from browser-local storage. A public STUN server assists NAT discovery. No TURN relay is currently configured.
+p2p-share uses Firebase Authentication and Cloud Firestore only to discover peers and exchange temporary WebRTC session descriptions. Code, files, chat, editor state, and media are never written to Firebase; they travel over encrypted WebRTC routes and can be recovered from browser-local storage. Public STUN endpoints assist direct NAT discovery. A deployment can configure TURN to relay encrypted WebRTC packets when restrictive networks cannot establish a direct route.
 
 Opening a compact clean-path room link such as `https://p2p-share.github.io/teZAT6` starts automatic multi-peer discovery. Generated IDs contain six alphanumeric characters; custom IDs accept 3–64 letters, numbers, underscores, or hyphens. Existing `#room=` links remain compatible:
 
@@ -24,7 +24,21 @@ Opening a compact clean-path room link such as `https://p2p-share.github.io/teZA
 4. Peers exchange offers and answers through a short-lived Firestore mailbox.
 5. Consumed signals are deleted and collaboration continues over a bounded WebRTC overlay. Deduplicated Yjs, chat, review, and control events propagate across that overlay.
 
-Firebase is signaling infrastructure, so the application is no longer strictly infrastructure-free. STUN improves direct connectivity, but connections can still fail across restrictive or symmetric NATs until a TURN service is configured.
+Firebase is signaling infrastructure, so the application is no longer strictly infrastructure-free. STUN improves direct connectivity, but reliable operation across restrictive or symmetric NATs requires a TURN service.
+
+### Reliable NAT traversal with TURN
+
+GitHub Pages cannot operate a TURN relay itself because TURN must accept long-lived UDP/TCP connections. Obtain TURN credentials from a managed provider or a Coturn deployment, then configure these GitHub repository settings:
+
+- Variable `VITE_TURN_URLS`: comma-separated relay URLs. Include UDP and TLS/TCP transports where the provider supports them, for example `turn:relay.example.com:3478?transport=udp,turns:relay.example.com:5349?transport=tcp`.
+- Secret `VITE_TURN_USERNAME`: TURN username.
+- Secret `VITE_TURN_CREDENTIAL`: TURN credential.
+
+The Pages workflow adds these values to the production build automatically. Vite client variables are necessarily visible to browsers, even when sourced from GitHub Actions secrets. Use provider-issued, origin-restricted, quota-limited, or short-lived credentials—not an unrestricted permanent Coturn administrator credential. For truly ephemeral TURN credentials, place a small authenticated credential-minting endpoint in front of Coturn and extend the client to request them at runtime.
+
+After saving the settings, run the Pages workflow again. WebRTC tries direct host and STUN paths first and can fall back to TURN. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and the optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
+
+For Metered, place all of the provider's `turn:` and `turns:` URLs in the single comma-separated `VITE_TURN_URLS` variable. The public Metered STUN endpoint is already included in the application's default ICE pool. Keep the username and credential in the two GitHub settings above rather than committing them to this repository.
 
 Consumed signaling documents and intentional participant departures are deleted by the browser. Firestore TTL is intentionally not enabled in `firestore.indexes.json` because managed TTL deletion requires billing. Projects on the Blaze plan can opt in by adding TTL policies for the `expiresAt` field on the `rooms` and `signals` collection groups.
 
@@ -114,7 +128,7 @@ Audio and video use WebRTC media tracks over the same direct peer connections as
 
 Read-only and editable modes are enforced by the official p2p-share client. Because this is a decentralized static application without a trusted authorization server, they are cooperative client permissions rather than protection against a deliberately modified client. Password encryption is the security boundary for confidential room content.
 
-During active calls and file transfers, p2p-share requests the Screen Wake Lock API where supported. Returning to a visible tab refreshes presence without destroying healthy routes. An eight-second overlay health check repairs missing neighbors locally, transient WebRTC disconnections receive a 15-second grace period, simultaneous repair offers use deterministic glare resolution, and unanswered automatic offers are removed after 30 seconds. Two STUN endpoints are requested from the same public provider for DNS and endpoint resilience. Mobile operating systems can still suspend browser execution completely; a static PWA or service worker cannot guarantee a live WebRTC connection while the OS has suspended the page.
+During active calls and file transfers, p2p-share requests the Screen Wake Lock API where supported. Returning to a visible tab refreshes presence without destroying healthy routes. An eight-second overlay health check repairs missing neighbors locally, initial ICE failures now trigger immediate localized repair, transient WebRTC disconnections receive a 15-second grace period, simultaneous repair offers use deterministic glare resolution, and unanswered automatic offers are removed after 30 seconds. Four STUN endpoints are pooled for endpoint resilience, and configured TURN UDP/TLS routes provide fallback for restrictive NATs and firewalls. Mobile operating systems can still suspend browser execution completely; a static PWA or service worker cannot guarantee a live WebRTC connection while the OS has suspended the page.
 
 Simple JavaScript and TypeScript execute in a disposable Web Worker with a five-second timeout and network APIs disabled. Python uses Pyodide, Ruby uses ruby.wasm, PHP uses PHP Wasm, Lua uses Fengari, R uses WebR, SQL uses an in-memory SQLite Wasm database, and C/C++ use Wasm Clang. Node.js projects with a `package.json` use WebContainers, while frontend projects use Sandpack. Runtime payloads are lazy-loaded on first use; C/C++, R, Ruby, and Python can have substantial first-run downloads. CheerpJ is identified for compiled Java `.class`/`.jar` artifacts, but Java source compilation is not currently provided.
 
@@ -124,7 +138,7 @@ Simple JavaScript and TypeScript execute in a disposable Web Worker with a five-
 - Open **Code runner** to execute the current document. The latest result is stored in the collaborative Yjs document so output appears for everyone.
 - Open **Version logs** to inspect line-level attribution. The panel stays hidden until requested. Clearing it is a shared room action.
 
-Full-mesh video is appropriate only for small collaborative groups because each browser sends one media stream to every other participant. Large conferences need an SFU media server, which would violate this project’s entirely static, zero-storage-server runtime. Direct calls can also fail behind restrictive NATs because p2p-share uses STUN but deliberately has no TURN relay.
+Full-mesh video is appropriate only for small collaborative groups because each browser sends one media stream to every other participant. Large conferences need an SFU media server, which would violate this project’s entirely static, zero-storage-server runtime. Restrictive networks require the optional TURN configuration described above.
 
 ## Publishing and Git integration
 

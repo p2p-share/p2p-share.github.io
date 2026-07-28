@@ -49,6 +49,7 @@ import {
 } from "./lib/fileTransfer";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
 import { FirebaseSignaling, getFirebaseRoomSecurity, type FirebaseRoomSecurity } from "./lib/firebaseSignaling";
+import { requiresDisplayName } from "./lib/identity";
 import { emptyRunResult, runBrowserCode } from "./lib/runner";
 import type { InviteToken } from "./lib/signaling";
 import type { AccessMode, AnalysisReport, ChatMessage, CodeFileMeta, Presence, ProjectManifest, ReviewEntry, RoomRecord, RunResult, SharedFile, Transfer, VersionLog } from "./types";
@@ -265,7 +266,9 @@ export function App() {
     lines: number;
     phase: "reading" | "syncing" | "verifying" | "saving";
   }>();
-  const needsOnboarding = useRef(!sessionStorage.getItem("sharecode:guest-name"));
+  const needsOnboarding = useRef(
+    requiresDisplayName(sessionStorage.getItem("sharecode:guest-name")),
+  );
   const [onboardingOpen, setOnboardingOpen] = useState(needsOnboarding.current);
   const [onboardingError, setOnboardingError] = useState("");
   const [localName, setLocalName] = useState(randomGuestName);
@@ -888,7 +891,10 @@ export function App() {
             } else {
               let finishedBlob: Blob;
               if (sink.bufferedChunks && sink.bufferedChunks.length > 0) {
-                finishedBlob = new Blob(sink.bufferedChunks, { type: sink.file.type });
+                const blobParts = sink.bufferedChunks.map(
+                  (chunk) => Uint8Array.from(chunk).buffer,
+                );
+                finishedBlob = new Blob(blobParts, { type: sink.file.type });
                 void putFile(session.roomId, sink.file.id, finishedBlob).catch(() => undefined);
               } else {
                 finishedBlob = await finishChunks(session.roomId, transferId, sink.file.id, sink.file.type);
@@ -1607,6 +1613,10 @@ export function App() {
     const nextName = nameDraft.trim();
     if (nextName.length < 2) {
       setOnboardingError("Enter at least 2 characters.");
+      return;
+    }
+    if (requiresDisplayName(nextName)) {
+      setOnboardingError("Choose a personal name that does not contain “Guest”.");
       return;
     }
     sessionStorage.setItem("sharecode:guest-name", nextName);
