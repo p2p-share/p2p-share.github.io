@@ -212,7 +212,7 @@ async function verifyPasswordRoom() {
   await unlock.getByRole("button", { name: "Unlock room" }).click();
   const guestName = guest.getByLabel("Your display name");
   await guestName.waitFor();
-  await guestName.fill("Protected guest");
+  await guestName.fill("Protected member");
   await guest.getByRole("button", { name: "Enter workspace" }).click();
   try {
     await Promise.all([

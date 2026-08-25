@@ -147,12 +147,25 @@ function roomUrl(roomId: string, access?: AccessMode) {
   return url.toString();
 }
 
-function randomGuestName() {
-  const current = sessionStorage.getItem("sharecode:guest-name");
-  if (current) return current;
-  const value = `Guest ${Math.floor(100 + Math.random() * 900)}`;
-  sessionStorage.setItem("sharecode:guest-name", value);
-  return value;
+// Whimsical display names for the "Use Random" shortcut. Curated to common,
+// everyday non-living objects so no generated name is a person or offensive.
+const OBJECT_NAMES = [
+  "Abacus", "Anchor", "Anvil", "Backpack", "Balloon", "Basket", "Beacon", "Bench",
+  "Binoculars", "Blanket", "Bookmark", "Bucket", "Cabinet", "Calendar", "Camera",
+  "Candle", "Cart", "Chisel", "Clock", "Colander", "Compass", "Cushion", "Domino",
+  "Envelope", "Flask", "Funnel", "Gear", "Gramophone", "Hammer", "Helmet",
+  "Hourglass", "Jar", "Kayak", "Kettle", "Kite", "Ladle", "Lantern", "Lighthouse",
+  "Locket", "Magnet", "Marble", "Mirror", "Mug", "Notebook", "Paintbrush",
+  "Paperclip", "Pendant", "Pendulum", "Pencil", "Periscope", "Projector",
+  "Propeller", "Pulley", "Puzzle", "Quilt", "Radio", "Ruler", "Sextant", "Shelf",
+  "Skillet", "Stool", "Suitcase", "Sundial", "Teapot", "Telescope",
+  "Toolbox", "Trolley", "Umbrella", "Vase", "Wagon", "Whisk", "Winch", "Windmill",
+  "Wrench",
+];
+
+function randomObjectName() {
+  const noun = OBJECT_NAMES[Math.floor(Math.random() * OBJECT_NAMES.length)];
+  return `${noun} ${Math.floor(100 + Math.random() * 900)}`;
 }
 
 function updateTransfer(
@@ -267,13 +280,14 @@ export function App() {
     lines: number;
     phase: "reading" | "syncing" | "verifying" | "saving";
   }>();
-  const needsOnboarding = useRef(
-    requiresDisplayName(sessionStorage.getItem("sharecode:guest-name")),
-  );
+  const storedName = sessionStorage.getItem("sharecode:guest-name") || "";
+  const needsOnboarding = useRef(requiresDisplayName(storedName));
   const [onboardingOpen, setOnboardingOpen] = useState(needsOnboarding.current);
   const [onboardingError, setOnboardingError] = useState("");
-  const [localName, setLocalName] = useState(randomGuestName);
-  const [nameDraft, setNameDraft] = useState(localName);
+  const [localName, setLocalName] = useState(storedName);
+  // New visitors start with an empty field so they choose their own name;
+  // only a previously saved, non-placeholder name is restored into the draft.
+  const [nameDraft, setNameDraft] = useState(() => (requiresDisplayName(storedName) ? "" : storedName));
   const [dragActive, setDragActive] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent>();
@@ -1609,7 +1623,12 @@ export function App() {
   };
 
   const savePreferences = () => {
-    const nextName = nameDraft.trim() || randomGuestName();
+    const trimmedName = nameDraft.trim();
+    if (trimmedName && requiresDisplayName(trimmedName)) {
+      showToast("Choose a personal name that does not contain “Guest”.");
+      return;
+    }
+    const nextName = trimmedName || localName;
     sessionStorage.setItem("sharecode:guest-name", nextName);
     localStorage.setItem("sharecode:font-size", String(fontSize));
     localStorage.setItem("sharecode:line-wrap", lineWrap ? "on" : "off");
@@ -2542,15 +2561,25 @@ export function App() {
           </div>
           <div className="field-group">
             <label htmlFor="onboarding-name">Your display name</label>
-            <input
-              id="onboarding-name"
-              autoFocus
-              maxLength={32}
-              value={nameDraft}
-              onChange={(event) => setNameDraft(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && completeOnboarding()}
-              placeholder="e.g. Alex"
-            />
+            <div className="name-field">
+              <button
+                type="button"
+                className="random-name-button"
+                title="Fill in a random object name"
+                onClick={() => setNameDraft(randomObjectName())}
+              >
+                Use Random
+              </button>
+              <input
+                id="onboarding-name"
+                autoFocus
+                maxLength={32}
+                value={nameDraft}
+                onChange={(event) => setNameDraft(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && completeOnboarding()}
+                placeholder="Enter your name"
+              />
+            </div>
           </div>
           <button className="primary-button" onClick={completeOnboarding}>
             <Icon name={boot?.inviteToken ? "users" : "chevron"} />

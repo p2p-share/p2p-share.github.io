@@ -4614,6 +4614,47 @@ body,
   font-size: 9px;
 }
 
+.name-field {
+  display: flex;
+  align-items: stretch;
+  height: 40px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #d4d4d8);
+  border-radius: 7px;
+  transition: border-color .16s, box-shadow .16s;
+}
+
+.name-field:focus-within {
+  border-color: var(--violet);
+}
+
+.name-field .random-name-button {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  color: var(--muted);
+  background: var(--subtle);
+  border-right: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.name-field .random-name-button:hover {
+  color: var(--violet);
+  background: var(--hover);
+}
+
+.name-field input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
 @media (max-width: 1050px) {
   .chat-panel {
     position: fixed;
