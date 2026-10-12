@@ -3,6 +3,7 @@ import { basicSetup } from "codemirror";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultHighlightStyle, indentUnit, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import type { EditorThemeMode } from "../lib/appearance";
 import { indentSelection, selectAll } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
 import { showMinimap } from "@replit/codemirror-minimap";
@@ -116,6 +117,42 @@ export const languages = [
   ["yaml", "YAML"],
 ] as const;
 
+const editorPalettes: Record<EditorThemeMode, {
+  dark: boolean;
+  background: string;
+  foreground: string;
+  gutter: string;
+  gutterText: string;
+  activeLine: string;
+  selection: string;
+  cursor: string;
+}> = {
+  light: {
+    dark: false, background: "#ffffff", foreground: "#27272a", gutter: "#ffffff",
+    gutterText: "#71717a", activeLine: "#f4f4f5", selection: "#d8d1ff", cursor: "#7457f5",
+  },
+  dark: {
+    dark: true, background: "#111113", foreground: "#e4e4e7", gutter: "#111113",
+    gutterText: "#71717a", activeLine: "#18181b", selection: "#44368a", cursor: "#8b7cf6",
+  },
+  contrast: {
+    dark: true, background: "#000000", foreground: "#ffffff", gutter: "#000000",
+    gutterText: "#ffff00", activeLine: "#1a1a00", selection: "#005fcc", cursor: "#ffff00",
+  },
+  midnight: {
+    dark: true, background: "#0b1020", foreground: "#dbeafe", gutter: "#080d1a",
+    gutterText: "#64748b", activeLine: "#111a33", selection: "#1e3a8a", cursor: "#60a5fa",
+  },
+  forest: {
+    dark: true, background: "#0d1712", foreground: "#d7eadf", gutter: "#09110d",
+    gutterText: "#668575", activeLine: "#14251b", selection: "#24543a", cursor: "#4ade80",
+  },
+  solarized: {
+    dark: false, background: "#fdf6e3", foreground: "#586e75", gutter: "#eee8d5",
+    gutterText: "#93a1a1", activeLine: "#eee8d5", selection: "#c9d9d3", cursor: "#268bd2",
+  },
+};
+
 export function CodeEditor({
   text,
   language,
@@ -140,7 +177,7 @@ export function CodeEditor({
   dark: boolean;
   fontSize: number;
   lineWrap: boolean;
-  themeMode: "light" | "dark" | "contrast";
+  themeMode: EditorThemeMode;
   tabSize: number;
   keyBinding: "standard" | "vim" | "emacs";
   minimap: boolean;
@@ -170,38 +207,37 @@ export function CodeEditor({
     if (!hostRef.current) return;
     const localOrigin = Symbol("codemirror");
     let applyingRemote = false;
-    const highContrast = themeMode === "contrast";
-    const isDark = themeMode !== "light";
+    const palette = editorPalettes[themeMode];
     const theme = EditorView.theme(
       {
         "&": {
           height: "100%",
-          color: highContrast ? "#ffffff" : isDark ? "#e4e4e7" : "#27272a",
-          backgroundColor: highContrast ? "#000000" : isDark ? "#111113" : "#ffffff",
+          color: palette.foreground,
+          backgroundColor: palette.background,
           fontSize: `${fontSize}px`,
         },
         ".cm-content": {
           fontFamily: '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
           padding: "20px 0 40vh",
-          caretColor: "#7c5cff",
+          caretColor: palette.cursor,
         },
-        ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#7c5cff" },
+        ".cm-cursor, .cm-dropCursor": { borderLeftColor: palette.cursor },
         ".cm-gutters": {
-          backgroundColor: highContrast ? "#000000" : isDark ? "#111113" : "#ffffff",
-          color: highContrast ? "#ffff00" : isDark ? "#71717a" : "#71717a",
+          backgroundColor: palette.gutter,
+          color: palette.gutterText,
           border: "none",
           minWidth: "48px",
         },
         ".cm-activeLine, .cm-activeLineGutter": {
-          backgroundColor: highContrast ? "#1a1a00" : isDark ? "#18181b" : "#f4f4f5",
+          backgroundColor: palette.activeLine,
         },
         ".cm-selectionBackground, ::selection": {
-          backgroundColor: highContrast ? "#005fcc !important" : isDark ? "#44368a !important" : "#d8d1ff !important",
+          backgroundColor: `${palette.selection} !important`,
         },
         "&.cm-focused": { outline: "none" },
         ".cm-minimap-gutter": { opacity: "0.72" },
       },
-      { dark: isDark },
+      { dark: palette.dark },
     );
     const updateListener = EditorView.updateListener.of((update) => {
       if (!update.docChanged || applyingRemote) return;

@@ -72,7 +72,7 @@ const languageByExtension: Record<string, string> = {
   html: "html", htm: "html", css: "css", json: "json", jsonc: "json",
   sass: "sass", scss: "sass", vb: "vb", vbs: "vb",
   md: "markdown", markdown: "markdown", sql: "sql", yaml: "yaml", yml: "yaml",
-  xml: "xml", svg: "xml", toml: "toml", txt: "text", log: "text",
+  xml: "xml", svg: "xml", toml: "toml", dockerfile: "dockerfile", txt: "text", log: "text",
 };
 
 export function languageFromFilename(filename: string) {
@@ -119,6 +119,27 @@ export function documentFilename(name: string, language: string): string {
     return /^dockerfile(?:\.|$)/i.test(clean) ? clean : `${clean}.Dockerfile`;
   }
   return clean.toLowerCase().endsWith(`.${extension}`) ? clean : `${clean}.${extension}`;
+}
+
+export function filenameForLanguage(name: string, language: string): string {
+  const normalized = name.replaceAll("\\", "/");
+  const separator = normalized.lastIndexOf("/");
+  const directory = separator >= 0 ? normalized.slice(0, separator + 1) : "";
+  const leaf = separator >= 0 ? normalized.slice(separator + 1) : normalized;
+  const currentLanguage = languageFromFilename(leaf);
+  const isKnownTextName = /\.(?:txt|log)$/i.test(leaf)
+    || /^(?:makefile|gnumakefile)(?:\..+)?$/i.test(leaf);
+
+  if (currentLanguage === language && (language !== "text" || isKnownTextName)) {
+    return `${directory}${leaf}`;
+  }
+
+  const replaceKnownExtension = currentLanguage !== "text"
+    || (language !== "text" && isKnownTextName);
+  const base = replaceKnownExtension && /\.[^./]+$/.test(leaf)
+    ? leaf.replace(/\.[^./]+$/, "")
+    : leaf;
+  return `${directory}${documentFilename(base, language)}`;
 }
 
 export function documentStats(value: string) {

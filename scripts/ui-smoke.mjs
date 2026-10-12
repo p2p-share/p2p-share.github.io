@@ -18,10 +18,45 @@ async function exercise(viewport, label) {
   const onboarding = page.getByLabel("Your display name");
   await onboarding.or(page.getByLabel("Collaborative code editor")).first().waitFor({ timeout: 30_000 });
   if (await onboarding.isVisible()) {
+    await page.getByRole("button", { name: "Use random" }).click();
+    const randomName = await onboarding.inputValue();
+    if (!/^[A-Za-z]+ \d{3}$/.test(randomName)) {
+      throw new Error(`Random display name has an unexpected format: ${randomName}`);
+    }
     await onboarding.fill(`Smoke ${label}`);
     await page.getByRole("button", { name: "Enter workspace" }).click();
   }
   await page.getByLabel("Collaborative code editor").waitFor();
+  if (label === "desktop") {
+    const app = page.locator(".app");
+    if (!await app.evaluate((element) => element.classList.contains("light"))) {
+      throw new Error("A first-time browser did not start in light mode.");
+    }
+    await page.getByLabel("Privacy settings").click();
+    const settings = page.getByRole("dialog", { name: "Settings & privacy" });
+    await settings.getByRole("radio", { name: "Dark" }).click();
+    await settings.getByRole("radio", { name: "rose buttons" }).click();
+    await settings.getByLabel("Editor theme").selectOption("forest");
+    if (!await app.evaluate((element) => element.classList.contains("dark"))) {
+      throw new Error("Dark workspace mode did not preview immediately.");
+    }
+    if (await app.getAttribute("data-accent") !== "rose") {
+      throw new Error("Button colour theme did not preview immediately.");
+    }
+    await settings.getByRole("button", { name: "Save settings" }).click();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByLabel("Collaborative code editor").waitFor({ timeout: 30_000 });
+    if (!await app.evaluate((element) => element.classList.contains("dark"))
+      || await app.getAttribute("data-accent") !== "rose") {
+      throw new Error("Workspace appearance did not persist after reload.");
+    }
+    await page.getByLabel("Privacy settings").click();
+    const restoredSettings = page.getByRole("dialog", { name: "Settings & privacy" });
+    if (await restoredSettings.getByLabel("Editor theme").inputValue() !== "forest") {
+      throw new Error("Editor theme did not persist after reload.");
+    }
+    await restoredSettings.getByRole("button", { name: "Close dialog" }).click();
+  }
   if (label === "desktop") await page.locator(".share-button").click();
   else await page.getByLabel("Room actions").getByRole("button", { name: "Share", exact: true }).click();
   const inviteDialog = page.getByRole("dialog", { name: "Invite people" });

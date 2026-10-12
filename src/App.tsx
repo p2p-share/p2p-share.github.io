@@ -19,10 +19,19 @@ import { ProjectPanel } from "./components/ProjectPanel";
 import { WorkbenchPanel } from "./components/WorkbenchPanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { analyzeCode, formatCode } from "./lib/analysis";
+import {
+  ACCENT_THEMES,
+  APP_THEMES,
+  EDITOR_THEMES,
+  storedChoice,
+  type AccentTheme,
+  type AppTheme,
+  type EditorThemeMode,
+} from "./lib/appearance";
 import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
 import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
-import { detectLanguage, documentFilename, documentStats, downloadText, languageFromFilename } from "./lib/document";
+import { detectLanguage, documentFilename, documentStats, downloadText, filenameForLanguage, languageFromFilename } from "./lib/document";
 import { streamUtf8Blob, type StreamImportProgress } from "./lib/largeImport";
 import {
   downloadProjectZip,
@@ -252,15 +261,21 @@ export function App() {
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [securityError, setSecurityError] = useState("");
-  const [dark, setDark] = useState(() => localStorage.getItem("sharecode:theme") !== "light");
+  const [appTheme, setAppTheme] = useState<AppTheme>(() =>
+    storedChoice(localStorage.getItem("sharecode:theme"), APP_THEMES, "light"),
+  );
+  const dark = appTheme === "dark";
+  const [accentTheme, setAccentTheme] = useState<AccentTheme>(() =>
+    storedChoice(localStorage.getItem("sharecode:accent-theme"), ACCENT_THEMES, "violet"),
+  );
   const [fontSize, setFontSize] = useState(() =>
     Math.min(20, Math.max(12, Number(localStorage.getItem("sharecode:font-size")) || 14)),
   );
   const [lineWrap, setLineWrap] = useState(
     () => localStorage.getItem("sharecode:line-wrap") === "on",
   );
-  const [editorTheme, setEditorTheme] = useState<"light" | "dark" | "contrast">(
-    () => (localStorage.getItem("sharecode:editor-theme") as "light" | "dark" | "contrast") || "dark",
+  const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(
+    () => storedChoice(localStorage.getItem("sharecode:editor-theme"), EDITOR_THEMES, "light"),
   );
   const [tabSize, setTabSize] = useState(() => Number(localStorage.getItem("sharecode:tab-size")) || 2);
   const [keyBinding, setKeyBinding] = useState<"standard" | "vim" | "emacs">(
@@ -1632,6 +1647,8 @@ export function App() {
     sessionStorage.setItem("sharecode:guest-name", nextName);
     localStorage.setItem("sharecode:font-size", String(fontSize));
     localStorage.setItem("sharecode:line-wrap", lineWrap ? "on" : "off");
+    localStorage.setItem("sharecode:theme", appTheme);
+    localStorage.setItem("sharecode:accent-theme", accentTheme);
     localStorage.setItem("sharecode:editor-theme", editorTheme);
     localStorage.setItem("sharecode:tab-size", String(tabSize));
     localStorage.setItem("sharecode:keybinding", keyBinding);
@@ -2049,6 +2066,7 @@ export function App() {
   return (
     <div
       className={`app ${dark ? "dark" : "light"} ${importProgress ? "importing" : ""}`}
+      data-accent={accentTheme}
       data-active-panel={activeWorkspacePanel || "none"}
       data-revision={revision}
     >
@@ -2138,9 +2156,9 @@ export function App() {
           <button
             className="icon-button top-icon"
             onClick={() => {
-              const next = !dark;
-              setDark(next);
-              localStorage.setItem("sharecode:theme", next ? "dark" : "light");
+              const next = dark ? "light" : "dark";
+              setAppTheme(next);
+              localStorage.setItem("sharecode:theme", next);
             }}
             aria-label={`Use ${dark ? "light" : "dark"} theme`}
           >
@@ -2276,10 +2294,15 @@ export function App() {
               value={language}
               languages={languages}
               disabled={isReadOnly || Boolean(importProgress)}
-              onChange={(value) => session.codeFileMeta.set(activeFileId, {
-                ...(activeMeta || { name: "untitled", createdBy: localName, createdAt: Date.now() }),
-                language: value,
-              })}
+              onChange={(value) => {
+                const metadata = activeMeta
+                  || { name: "untitled", language: "text", createdBy: localName, createdAt: Date.now() };
+                session.codeFileMeta.set(activeFileId, {
+                  ...metadata,
+                  name: filenameForLanguage(metadata.name, value),
+                  language: value,
+                });
+              }}
             />
             <span className="toolbar-separator" />
             <span className="privacy-state">
@@ -2562,14 +2585,6 @@ export function App() {
           <div className="field-group">
             <label htmlFor="onboarding-name">Your display name</label>
             <div className="name-field">
-              <button
-                type="button"
-                className="random-name-button"
-                title="Fill in a random object name"
-                onClick={() => setNameDraft(randomObjectName())}
-              >
-                Use Random
-              </button>
               <input
                 id="onboarding-name"
                 autoFocus
@@ -2579,6 +2594,18 @@ export function App() {
                 onKeyDown={(event) => event.key === "Enter" && completeOnboarding()}
                 placeholder="Enter your name"
               />
+              <button
+                type="button"
+                className="random-name-button"
+                title="Fill in a random object name"
+                onClick={() => {
+                  setNameDraft(randomObjectName());
+                  setOnboardingError("");
+                }}
+              >
+                <Icon name="refresh" />
+                <span>Use random</span>
+              </button>
             </div>
           </div>
           <button className="primary-button" onClick={completeOnboarding}>
@@ -2596,6 +2623,49 @@ export function App() {
         description="Personalize the editor and control what this browser stores."
       >
         <div className="dialog-body stack">
+          <div className="settings-section">
+            <span className="section-label">Appearance</span>
+            <div className="appearance-grid">
+              <fieldset className="appearance-group">
+                <legend>Workspace mode</legend>
+                <div className="theme-options" role="radiogroup" aria-label="Workspace mode">
+                  {(["light", "dark"] as const).map((theme) => (
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={appTheme === theme}
+                      className={`theme-option ${appTheme === theme ? "selected" : ""}`}
+                      key={theme}
+                      onClick={() => setAppTheme(theme)}
+                    >
+                      <Icon name={theme === "light" ? "sun" : "moon"} />
+                      <span>{theme === "light" ? "Light" : "Dark"}</span>
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="appearance-group">
+                <legend>Button colour</legend>
+                <div className="accent-options" role="radiogroup" aria-label="Button colour theme">
+                  {ACCENT_THEMES.map((accent) => (
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-label={`${accent} buttons`}
+                      aria-checked={accentTheme === accent}
+                      className={`accent-option ${accentTheme === accent ? "selected" : ""}`}
+                      data-colour={accent}
+                      key={accent}
+                      onClick={() => setAccentTheme(accent)}
+                    >
+                      <span />
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
+          </div>
+          <div className="divider"><span>editor</span></div>
           <div className="settings-section">
             <span className="section-label">Your experience</span>
             <div className="field-group">
@@ -2642,6 +2712,9 @@ export function App() {
                   <option value="dark">Dark</option>
                   <option value="light">Light</option>
                   <option value="contrast">High contrast</option>
+                  <option value="midnight">Midnight blue</option>
+                  <option value="forest">Forest</option>
+                  <option value="solarized">Solarized light</option>
                 </select>
               </div>
               <div className="field-group">

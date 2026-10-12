@@ -24,6 +24,23 @@ export type AnswerToken = {
 
 export const encodeSignal = (signal: InviteToken | AnswerToken) => encodeToken(signal);
 
+const isCorporateRelayCandidate = (candidate: RTCIceCandidate) => {
+  if (candidate.type !== "relay") return false;
+  // These fields are implemented by current browsers but are missing from
+  // some TypeScript DOM library versions supported by the project.
+  const details = candidate as RTCIceCandidate & {
+    relayProtocol?: string;
+    url?: string;
+  };
+  const relayProtocol = String(details.relayProtocol || "").toLowerCase();
+  const url = String(details.url || "").toLowerCase();
+  return candidate.protocol === "tcp"
+    || relayProtocol === "tcp"
+    || relayProtocol === "tls"
+    || /^turns:/.test(url)
+    || /[?&]transport=tcp(?:&|$)/.test(url);
+};
+
 export async function decodeSignal(token: string): Promise<InviteToken | AnswerToken> {
   const value = await decodeToken<InviteToken | AnswerToken>(token.trim());
   if (value.v !== 1 || !["invite", "answer"].includes(value.kind)) {
@@ -32,7 +49,7 @@ export async function decodeSignal(token: string): Promise<InviteToken | AnswerT
   return value;
 }
 
-export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 8_000): Promise<void> {
+export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 12_000): Promise<void> {
   if (pc.iceGatheringState === "complete") return Promise.resolve();
   const hasTurn = pc.getConfiguration().iceServers?.some((server) =>
     (Array.isArray(server.urls) ? server.urls : [server.urls])
@@ -55,8 +72,10 @@ export function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 8_000): P
     }
     function candidate(event: RTCPeerConnectionIceEvent) {
       if (event.candidate?.type !== preferredType || settle) return;
-      // Give parallel TCP/TLS allocations a brief window to join the SDP
-      // without waiting for every unusable ICE route to time out.
+      // UDP relay candidates usually arrive first but are commonly blocked by
+      // corporate VPNs. Keep gathering until a TURN-over-TCP/TLS route is in
+      // the non-trickle SDP, then briefly allow parallel allocations to join.
+      if (hasTurn && !isCorporateRelayCandidate(event.candidate)) return;
       settle = window.setTimeout(done, 250);
     }
     pc.addEventListener("icegatheringstatechange", check);

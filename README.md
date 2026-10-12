@@ -37,7 +37,7 @@ GitHub Pages cannot safely hold a Cloudflare TURN API token or mint credentials.
 
 The browser fetches a fresh credential set with a six-second timeout, refreshes it every 35 minutes and reapplies it to active peer connections. If the Worker or Cloudflare TURN API is unavailable, the room continues with Cloudflare STUN instead of failing startup. Credentials are held only in page memory and both Worker and client use `no-store`.
 
-WebRTC prefetches a small candidate pool, tries direct host and STUN paths, and falls back to Cloudflare TURN over UDP, TCP, or TLS. Non-trickle signaling proceeds as soon as a usable relay candidate plus a short 250 ms TCP/TLS settlement window is available instead of waiting for every ICE route to finish. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
+WebRTC prefetches a small candidate pool, tries direct host and STUN paths, and falls back to Cloudflare TURN over UDP, TCP, or TLS. Non-trickle signaling waits for a corporate-friendly TURN-over-TCP/TLS candidate (or a bounded 12-second gathering deadline) before exchanging connection details, so a faster but VPN-blocked UDP relay cannot crowd the usable route out of the offer. The relay sees network metadata and encrypted WebRTC packets, but WebRTC DTLS and optional room-level encryption remain end to end; the TURN server does not receive plaintext project content.
 
 Cloudflare is the only TURN provider used by the application. No permanent TURN username or credential is accepted by the client or included in the GitHub Pages bundle. If the credential Worker is temporarily unavailable, the client falls back only to Cloudflare’s public STUN endpoints and continues retrying direct routes.
 
@@ -60,7 +60,7 @@ Consumed signaling documents and intentional participant departures are deleted 
 - Editable and read-only one-time invites with copy, native sharing, and locally generated QR codes
 - Optional password setup inside Invite People and owner controls for changing each connected peer between editable and read-only client access
 - Cross-tab duplicate detection, Yjs synchronization, single-tab persistence leadership, snippet handoff, recent-project refreshes, and app-update notices
-- CodeMirror folding, bracket matching, automatic indentation, multiple cursors, regex find/replace, optional minimap, command palette, Vim/Emacs bindings, tab width, and high-contrast theme
+- CodeMirror folding, bracket matching, automatic indentation, multiple cursors, regex find/replace, optional minimap, command palette, Vim/Emacs bindings, tab width, and six editor themes
 - Worker-backed formatting and diagnostics: Prettier, SQL formatting, JSON validation, Markdown checks, TODO/FIXME extraction, dependencies, duplicates, indentation, whitespace, counts, and complexity estimates
 - Sandboxed HTML/CSS/JavaScript preview with responsive viewports, console capture, DOM inspection, auto-refresh, and a JavaScript-off mode
 - Local Markdown, SVG, JSON tree, CSV table, Mermaid, diff/patch, Base64, and regular-expression tools
@@ -85,7 +85,7 @@ Consumed signaling documents and intentional participant departures are deleted 
 - Live line, word, and character statistics
 - Drag-and-drop project files/folders plus arbitrary attachment sharing
 - Adjustable editor text size, opt-in line wrapping (off by default), and peer display name
-- Dark/light themes with phone, tablet, desktop, and landscape layouts
+- Light-by-default and dark workspace modes, five button accent colours, and phone, tablet, desktop, and landscape layouts
 - Installable PWA shell with offline editing and local recovery
 - Touch-friendly mobile action bar, settings sheet, and file drawer
 - No runtime CDN or remotely loaded editor/formatter assets

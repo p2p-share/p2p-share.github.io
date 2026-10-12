@@ -61,6 +61,7 @@ textarea:focus-visible {
   height: 100%;
   color: var(--text);
   background: var(--bg);
+  color-scheme: light;
 }
 
 .app.dark {
@@ -73,6 +74,27 @@ textarea:focus-visible {
   --border: #29292d;
   --subtle: #1d1d20;
   --hover: #242428;
+  color-scheme: dark;
+}
+
+.app[data-accent="blue"] {
+  --violet: #2563eb;
+  --violet-hover: #1d4ed8;
+}
+
+.app[data-accent="emerald"] {
+  --violet: #047857;
+  --violet-hover: #065f46;
+}
+
+.app[data-accent="rose"] {
+  --violet: #e11d48;
+  --violet-hover: #be123c;
+}
+
+.app[data-accent="amber"] {
+  --violet: #c2410c;
+  --violet-hover: #9a3412;
 }
 
 .topbar {
@@ -84,6 +106,39 @@ textarea:focus-visible {
   color: #f4f4f5;
   background: #09090b;
   border-bottom: 1px solid #27272a;
+}
+
+.app.light .topbar {
+  color: var(--text);
+  background: color-mix(in srgb, var(--raised) 94%, var(--violet));
+  border-bottom-color: var(--border);
+  box-shadow: 0 1px 0 rgb(24 24 27 / 3%);
+}
+
+.app.light .document-name input {
+  color: var(--text);
+}
+
+.app.light .document-name input:hover,
+.app.light .document-name input:focus,
+.app.light .top-icon:hover {
+  color: var(--text);
+  background: var(--hover);
+  border-color: var(--border);
+}
+
+.app.light .top-icon {
+  color: var(--muted);
+}
+
+.app.light .status-pill {
+  color: var(--muted);
+  background: var(--subtle);
+  border-color: var(--border);
+}
+
+.app.light .avatar {
+  border-color: var(--raised);
 }
 
 .brand {
@@ -4090,6 +4145,98 @@ body,
   align-items: end;
 }
 
+.appearance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.appearance-group {
+  min-width: 0;
+  margin: 0;
+  padding: 11px;
+  background: color-mix(in srgb, var(--subtle) 68%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.appearance-group legend {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.theme-options,
+.accent-options {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.theme-option {
+  min-width: 0;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+  color: var(--muted);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.theme-option:hover,
+.theme-option.selected {
+  color: var(--violet);
+  border-color: color-mix(in srgb, var(--violet) 55%, var(--border));
+  background: color-mix(in srgb, var(--violet) 9%, var(--raised));
+}
+
+.theme-option svg {
+  width: 14px;
+}
+
+.accent-options {
+  min-height: 34px;
+  justify-content: space-between;
+}
+
+.accent-option {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 50%;
+}
+
+.accent-option span {
+  width: 20px;
+  height: 20px;
+  display: block;
+  background: var(--swatch);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%), 0 1px 4px rgb(0 0 0 / 16%);
+}
+
+.accent-option:hover,
+.accent-option.selected {
+  border-color: var(--swatch);
+}
+
+.accent-option[data-colour="violet"] { --swatch: #7457f5; }
+.accent-option[data-colour="blue"] { --swatch: #2563eb; }
+.accent-option[data-colour="emerald"] { --swatch: #047857; }
+.accent-option[data-colour="rose"] { --swatch: #e11d48; }
+.accent-option[data-colour="amber"] { --swatch: #c2410c; }
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -4319,6 +4466,10 @@ body,
   .preference-grid {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .appearance-grid {
+    grid-template-columns: 1fr;
   }
 
   .dialog-head {
@@ -4631,18 +4782,32 @@ body,
 
 .name-field .random-name-button {
   flex: 0 0 auto;
-  padding: 0 12px;
-  color: var(--muted);
-  background: var(--subtle);
-  border-right: 1px solid var(--border);
-  font-size: 11px;
+  gap: 6px;
+  margin: 4px;
+  padding: 0 10px;
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 10%, var(--raised));
+  border: 1px solid color-mix(in srgb, var(--violet) 24%, var(--border));
+  border-radius: 6px;
+  font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
 }
 
 .name-field .random-name-button:hover {
-  color: var(--violet);
-  background: var(--hover);
+  color: white;
+  background: var(--violet);
+  border-color: var(--violet);
+}
+
+.name-field .random-name-button svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 180ms ease;
+}
+
+.name-field .random-name-button:hover svg {
+  transform: rotate(45deg);
 }
 
 .name-field input {

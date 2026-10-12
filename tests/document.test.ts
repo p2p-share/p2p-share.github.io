@@ -1,4 +1,4 @@
-import { detectLanguage, documentFilename, documentStats, languageFromFilename } from "../src/lib/document";
+import { detectLanguage, documentFilename, documentStats, filenameForLanguage, languageFromFilename } from "../src/lib/document";
 import { languages } from "../src/components/CodeEditor";
 
 describe("document utilities", () => {
@@ -6,6 +6,15 @@ describe("document utilities", () => {
     expect(documentFilename("API: demo", "typescript")).toBe("API- demo.ts");
     expect(documentFilename("script.py", "python")).toBe("script.py");
     expect(documentFilename("   ", "text")).toBe("untitled.txt");
+  });
+
+  it("updates the file extension when a language is selected", () => {
+    expect(filenameForLanguage("untitled", "python")).toBe("untitled.py");
+    expect(filenameForLanguage("src/app.js", "typescript")).toBe("src/app.ts");
+    expect(filenameForLanguage("config.yml", "yaml")).toBe("config.yml");
+    expect(filenameForLanguage("notes.custom", "markdown")).toBe("notes.custom.md");
+    expect(filenameForLanguage("output.log", "text")).toBe("output.log");
+    expect(filenameForLanguage("service.Dockerfile", "python")).toBe("service.py");
   });
 
   it("detects modern source formats from filenames", () => {
