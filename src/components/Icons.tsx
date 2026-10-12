@@ -25,6 +25,7 @@ type IconName =
   | "play"
   | "phone-off"
   | "search"
+  | "screen"
   | "review"
   | "publish"
   | "qr"
@@ -68,6 +69,7 @@ const paths: Record<IconName, React.ReactNode> = {
   play: <path d="m8 5 11 7-11 7z"/>,
   "phone-off": <><path d="M10.7 13.3a16 16 0 0 0 3.9 2.3l2.1-2.1a2 2 0 0 1 2-.5l3.1 1a2 2 0 0 1 1.3 2v3a2 2 0 0 1-2 2A19 19 0 0 1 3 3a2 2 0 0 1 2-2h3a2 2 0 0 1 2 1.3l1 3.1a2 2 0 0 1-.5 2L8.4 9.5M2 2l20 20"/></>,
   search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>,
+  screen: <><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></>,
   review: <><path d="M4 4h16v12H7l-3 3z"/><path d="m9 10 2 2 4-4"/></>,
   publish: <><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 13v7h14v-7"/></>,
   qr: <><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM19 14h2M19 19h2v2M14 19v2h3"/></>,

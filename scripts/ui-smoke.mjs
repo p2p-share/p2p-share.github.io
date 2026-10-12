@@ -1,8 +1,11 @@
 import { chromium } from "playwright-core";
 
+const localOnly = process.argv.includes("--local-only");
+
 const browser = await chromium.launch({
   executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   headless: true,
+  args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
 });
 
 async function exercise(viewport, label) {
@@ -56,6 +59,14 @@ async function exercise(viewport, label) {
       throw new Error("Editor theme did not persist after reload.");
     }
     await restoredSettings.getByRole("button", { name: "Close dialog" }).click();
+    await page.getByRole("button", { name: "Open audio or video call" }).click();
+    const callPanel = page.getByRole("region", { name: "Peer call" });
+    await callPanel.getByRole("button", { name: "Audio call" }).click();
+    await callPanel.getByRole("button", { name: "Share screen" }).waitFor();
+    await callPanel.getByText("1", { exact: true }).waitFor();
+    await callPanel.getByRole("button", { name: "Copy room link" }).waitFor();
+    await callPanel.getByRole("button", { name: "Leave call" }).click();
+    await callPanel.getByRole("button", { name: "Minimize call" }).click();
   }
   if (label === "desktop") await page.locator(".share-button").click();
   else await page.getByLabel("Room actions").getByRole("button", { name: "Share", exact: true }).click();
@@ -264,13 +275,17 @@ async function verifyPasswordRoom() {
 const results = [
   await exercise({ width: 1440, height: 900 }, "desktop"),
   await exercise({ width: 390, height: 844 }, "mobile"),
-  await verifyAutomaticSignaling(),
-  await verifyPasswordRoom(),
 ];
+if (!localOnly) {
+  results.push(await verifyAutomaticSignaling(), await verifyPasswordRoom());
+}
 await browser.close();
 
 for (const result of results) {
-  if (result.errors.length) throw new Error(`${result.label} browser errors:\n${result.errors.join("\n")}`);
+  const relevantErrors = localOnly
+    ? result.errors.filter((error) => !error.includes("ERR_NETWORK_ACCESS_DENIED") && !error.includes("Automatic connection is unavailable"))
+    : result.errors;
+  if (relevantErrors.length) throw new Error(`${result.label} browser errors:\n${relevantErrors.join("\n")}`);
   if (result.dimensions && result.dimensions.scrollWidth > result.dimensions.width) {
     throw new Error(`${result.label} has horizontal overflow: ${JSON.stringify(result.dimensions)}`);
   }

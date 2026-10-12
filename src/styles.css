@@ -3529,6 +3529,23 @@ textarea:focus-visible {
   font-size: 14px;
 }
 
+.call-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  color: var(--muted);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.call-count svg {
+  width: 13px;
+}
+
 .activity-list {
   min-height: 0;
   flex: 1;
@@ -3790,6 +3807,14 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.call-error {
+  padding: 9px 14px;
+  color: #b42318;
+  background: color-mix(in srgb, #e5484d 10%, var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, #e5484d 32%, var(--border));
+  font-size: 10px;
+}
+
 .call-start > span {
   width: 54px;
   height: 54px;
@@ -3848,6 +3873,16 @@ textarea:focus-visible {
   transform: scaleX(-1);
 }
 
+.video-tile.presenting {
+  grid-column: span 2;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.video-tile.presenting video {
+  object-fit: contain;
+  transform: none;
+}
+
 .video-tile span {
   position: absolute;
   bottom: 7px;
@@ -3857,6 +3892,11 @@ textarea:focus-visible {
   background: rgb(0 0 0 / 58%);
   border-radius: 5px;
   font-size: 9px;
+}
+
+.video-tile span svg {
+  width: 12px;
+  vertical-align: -2px;
 }
 
 .call-controls {
@@ -3882,6 +3922,13 @@ textarea:focus-visible {
   color: white;
   background: #e5484d;
   border-color: transparent;
+}
+
+.call-controls button.sharing {
+  color: white;
+  background: var(--accent);
+  border-color: transparent;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .call-controls svg {

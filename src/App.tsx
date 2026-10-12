@@ -33,6 +33,7 @@ import { CrossTabCoordinator, mergeRecentProject } from "./lib/crossTab";
 import { createSalt, decryptBytes, deriveRoomKey, encryptBytes } from "./lib/crypto";
 import { deleteFile, deleteRoom, finishChunks, getFile, getRoom, putChunk, putFile, putRoom } from "./lib/db";
 import { detectLanguage, documentFilename, documentStats, downloadText, filenameForLanguage, languageFromFilename } from "./lib/document";
+import { callTracks, mediaCaptureMessage } from "./lib/callMedia";
 import { streamUtf8Blob, type StreamImportProgress } from "./lib/largeImport";
 import {
   downloadProjectZip,
@@ -324,6 +325,9 @@ export function App() {
   const [callMode, setCallMode] = useState<"audio" | "video">();
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [sharingPeerIds, setSharingPeerIds] = useState<Set<string>>(new Set());
+  const [callError, setCallError] = useState("");
   const openCall = useCallback(() => {
     setActiveWorkspacePanel(undefined);
     setCallOpen(true);
@@ -335,6 +339,9 @@ export function App() {
   // and are not copied into browser memory or IndexedDB when shared.
   const fileSources = useRef(new Map<string, File>());
   const wakeLock = useRef<WakeLockSentinelLike | undefined>(undefined);
+  const cameraStream = useRef<MediaStream | undefined>(undefined);
+  const screenStream = useRef<MediaStream | undefined>(undefined);
+  const callModeRef = useRef<"audio" | "video" | undefined>(undefined);
   const importInput = useRef<HTMLInputElement>(null);
   const importCancelled = useRef(false);
   const importInProgress = useRef(false);
@@ -358,8 +365,9 @@ export function App() {
   }, [accessMode]);
 
   useEffect(() => () => {
-    localStream?.getTracks().forEach((track) => track.stop());
-  }, [localStream]);
+    screenStream.current?.getTracks().forEach((track) => track.stop());
+    cameraStream.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   useEffect(() => {
     if (!session || session.codeFiles.has(activeFileId)) return;
@@ -810,10 +818,26 @@ export function App() {
           const peerId = String(body.peerId);
           if (body.active) {
             openCall();
-            showToast(`${String(body.name)} started a ${String(body.mode)} call`);
+            if (body.sharing === true) {
+              setSharingPeerIds((current) => new Set(current).add(peerId));
+              showToast(`${String(body.name)} is sharing their screen`);
+            } else if (body.sharing === false) {
+              setSharingPeerIds((current) => {
+                const next = new Set(current);
+                next.delete(peerId);
+                return next;
+              });
+            } else {
+              showToast(`${String(body.name)} started a ${String(body.mode)} call`);
+            }
           } else {
             setRemoteStreams((current) => {
               const next = new Map(current);
+              next.delete(peerId);
+              return next;
+            });
+            setSharingPeerIds((current) => {
+              const next = new Set(current);
               next.delete(peerId);
               return next;
             });
@@ -1756,11 +1780,14 @@ export function App() {
       showToast("Calls support up to 9 directly connected participants. Collaboration remains available to the full room.");
       return;
     }
+    setCallError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
         video: mode === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
       });
+      cameraStream.current = stream;
+      callModeRef.current = mode;
       setLocalStream(stream);
       setCallMode(mode);
       setMuted(false);
@@ -1774,12 +1801,89 @@ export function App() {
         active: true,
       });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "Camera or microphone access was not available.");
+      const message = mediaCaptureMessage(error, "call");
+      setCallError(message);
+      showToast(message);
+    }
+  };
+
+  const stopScreenShare = async () => {
+    const display = screenStream.current;
+    if (!display) return;
+    screenStream.current = undefined;
+    display.getTracks().forEach((track) => track.stop());
+    const source = cameraStream.current;
+    source?.getVideoTracks().forEach((track) => { track.enabled = !cameraOff; });
+    const restored = source
+      ? new MediaStream(callTracks(source, callModeRef.current === "video" ? source : undefined))
+      : undefined;
+    setLocalStream(restored);
+    setScreenSharing(false);
+    setCallError("");
+    await session?.mesh.setLocalMedia(restored);
+    await session?.mesh.send({
+      type: "call-state",
+      peerId: session.mesh.peerId,
+      name: localName,
+      mode: callModeRef.current,
+      active: true,
+      sharing: false,
+    });
+  };
+
+  const startScreenShare = async () => {
+    if (!session || !localStream || screenStream.current) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      const message = "This browser does not support screen sharing.";
+      setCallError(message);
+      showToast(message);
+      return;
+    }
+    setCallError("");
+    let display: MediaStream | undefined;
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const presentationTrack = display.getVideoTracks()[0];
+      if (!presentationTrack) throw new DOMException("No screen was selected.", "NotFoundError");
+      screenStream.current = display;
+      cameraStream.current?.getVideoTracks().forEach((track) => { track.enabled = false; });
+      const presentation = new MediaStream(callTracks(cameraStream.current || localStream, display));
+      setLocalStream(presentation);
+      setScreenSharing(true);
+      await session.mesh.setLocalMedia(presentation);
+      await session.mesh.send({
+        type: "call-state",
+        peerId: session.mesh.peerId,
+        name: localName,
+        mode: callModeRef.current,
+        active: true,
+        sharing: true,
+      });
+      presentationTrack.addEventListener("ended", () => void stopScreenShare(), { once: true });
+    } catch (error) {
+      display?.getTracks().forEach((track) => track.stop());
+      screenStream.current = undefined;
+      const source = cameraStream.current;
+      source?.getVideoTracks().forEach((track) => { track.enabled = !cameraOff; });
+      const restored = source
+        ? new MediaStream(callTracks(source, callModeRef.current === "video" ? source : undefined))
+        : localStream;
+      setLocalStream(restored);
+      setScreenSharing(false);
+      await session.mesh.setLocalMedia(restored).catch(() => undefined);
+      const message = mediaCaptureMessage(error, "screen");
+      setCallError(message);
+      showToast(message);
     }
   };
 
   const leaveCall = () => {
-    localStream?.getTracks().forEach((track) => track.stop());
+    const display = screenStream.current;
+    screenStream.current = undefined;
+    display?.getTracks().forEach((track) => track.stop());
+    const camera = cameraStream.current;
+    cameraStream.current = undefined;
+    camera?.getTracks().forEach((track) => track.stop());
     void session?.mesh.setLocalMedia();
     void session?.mesh.send({
       type: "call-state",
@@ -1790,7 +1894,13 @@ export function App() {
     });
     setLocalStream(undefined);
     setRemoteStreams(new Map());
+    setSharingPeerIds(new Set());
     setCallMode(undefined);
+    callModeRef.current = undefined;
+    setMuted(false);
+    setCameraOff(false);
+    setScreenSharing(false);
+    setCallError("");
   };
 
   const downloadFile = async (file: SharedFile) => {
@@ -2522,6 +2632,9 @@ export function App() {
         mode={callMode}
         muted={muted}
         cameraOff={cameraOff}
+        screenSharing={screenSharing}
+        sharingPeerIds={sharingPeerIds}
+        error={callError}
         onStart={(mode) => void startCall(mode)}
         onToggleMute={() => {
           const next = !muted;
@@ -2530,8 +2643,14 @@ export function App() {
         }}
         onToggleCamera={() => {
           const next = !cameraOff;
-          localStream?.getVideoTracks().forEach((track) => { track.enabled = !next; });
+          cameraStream.current?.getVideoTracks().forEach((track) => { track.enabled = !next; });
           setCameraOff(next);
+        }}
+        onToggleScreenShare={() => void (screenSharing ? stopScreenShare() : startScreenShare())}
+        onCopyLink={() => {
+          void navigator.clipboard.writeText(roomUrl(session.roomId))
+            .then(() => showToast("Room link copied"))
+            .catch(() => showToast("Could not copy the room link. Copy it from Share instead."));
         }}
         onLeave={leaveCall}
         onClose={() => setCallOpen(false)}
