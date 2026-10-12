@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
 
-const localOnly = process.argv.includes("--local-only");
+const localOnly = globalThis.process.argv.includes("--local-only");
 
 const browser = await chromium.launch({
   executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -61,6 +61,7 @@ async function exercise(viewport, label) {
     await restoredSettings.getByRole("button", { name: "Close dialog" }).click();
     await page.getByRole("button", { name: "Open audio or video call" }).click();
     const callPanel = page.getByRole("region", { name: "Peer call" });
+    await callPanel.getByRole("button", { name: "Present screen" }).waitFor();
     await callPanel.getByRole("button", { name: "Audio call" }).click();
     await callPanel.getByRole("button", { name: "Share screen" }).waitFor();
     await callPanel.getByText("1", { exact: true }).waitFor();

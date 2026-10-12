@@ -71,7 +71,11 @@ export function CallPanel({
       {!localStream && remoteStreams.size === 0 ? (
         <div className="call-start">
           <span><Icon name="video" /></span><strong>Talk while you build</strong><p>Start a direct, peer-to-peer meeting with everyone connected to this room.</p>
-          <div><button className="secondary-button" onClick={() => onStart("audio")}><Icon name="mic" /> Audio call</button><button className="primary-button" onClick={() => onStart("video")}><Icon name="video" /> Video call</button></div>
+          <div>
+            <button className="secondary-button" onClick={() => onStart("audio")}><Icon name="mic" /> Audio call</button>
+            <button className="primary-button" onClick={() => onStart("video")}><Icon name="video" /> Video call</button>
+            <button className="secondary-button" onClick={onToggleScreenShare}><Icon name="screen" /> Present screen</button>
+          </div>
         </div>
       ) : (
         <>
@@ -84,6 +88,7 @@ export function CallPanel({
               <>
                 <button onClick={() => onStart("audio")} aria-label="Join with audio"><Icon name="mic" /></button>
                 <button onClick={() => onStart("video")} aria-label="Join with video"><Icon name="video" /></button>
+                <button onClick={onToggleScreenShare} aria-label="Present screen"><Icon name="screen" /></button>
               </>
             ) : (
               <>

@@ -1832,7 +1832,11 @@ export function App() {
   };
 
   const startScreenShare = async () => {
-    if (!session || !localStream || screenStream.current) return;
+    if (!session || screenStream.current) return;
+    if (session.mesh.peerCount > 8) {
+      showToast("Calls support up to 9 directly connected participants. Collaboration remains available to the full room.");
+      return;
+    }
     if (!navigator.mediaDevices?.getDisplayMedia) {
       const message = "This browser does not support screen sharing.";
       setCallError(message);
@@ -1841,13 +1845,29 @@ export function App() {
     }
     setCallError("");
     let display: MediaStream | undefined;
+    let createdSource: MediaStream | undefined;
+    let captureAction: "call" | "screen" = "screen";
     try {
       display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       const presentationTrack = display.getVideoTracks()[0];
       if (!presentationTrack) throw new DOMException("No screen was selected.", "NotFoundError");
+      let source = cameraStream.current || localStream;
+      if (!source) {
+        captureAction = "call";
+        createdSource = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        });
+        source = createdSource;
+        cameraStream.current = source;
+        callModeRef.current = "audio";
+        setCallMode("audio");
+        setMuted(false);
+        setCameraOff(false);
+      }
       screenStream.current = display;
       cameraStream.current?.getVideoTracks().forEach((track) => { track.enabled = false; });
-      const presentation = new MediaStream(callTracks(cameraStream.current || localStream, display));
+      const presentation = new MediaStream(callTracks(source, display));
       setLocalStream(presentation);
       setScreenSharing(true);
       await session.mesh.setLocalMedia(presentation);
@@ -1863,6 +1883,12 @@ export function App() {
     } catch (error) {
       display?.getTracks().forEach((track) => track.stop());
       screenStream.current = undefined;
+      if (createdSource) {
+        createdSource.getTracks().forEach((track) => track.stop());
+        cameraStream.current = undefined;
+        callModeRef.current = undefined;
+        setCallMode(undefined);
+      }
       const source = cameraStream.current;
       source?.getVideoTracks().forEach((track) => { track.enabled = !cameraOff; });
       const restored = source
@@ -1871,7 +1897,7 @@ export function App() {
       setLocalStream(restored);
       setScreenSharing(false);
       await session.mesh.setLocalMedia(restored).catch(() => undefined);
-      const message = mediaCaptureMessage(error, "screen");
+      const message = mediaCaptureMessage(error, captureAction);
       setCallError(message);
       showToast(message);
     }
