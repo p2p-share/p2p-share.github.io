@@ -109,7 +109,7 @@ export function FilesPanel({
           }}
         >
           <Icon name="upload" />
-          <span><strong>Drop files to share</strong><small>Any type · up to 1 GB each · direct to peers</small></span>
+          <span><strong>Drop files to share</strong><small>Any type · up to 10 GB each · large downloads stream to disk</small></span>
         </button>
       )}
 

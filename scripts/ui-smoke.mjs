@@ -139,6 +139,7 @@ async function exercise(viewport, label) {
   else await page.getByLabel("Room actions").getByRole("button", { name: "Files", exact: true }).click();
   const sharedFiles = page.getByRole("complementary", { name: "Shared files" });
   await sharedFiles.waitFor();
+  await sharedFiles.getByText(/up to 10 GB each/).waitFor();
   await sharedFiles.locator('input[type="file"]').setInputFiles({
     name: "hello.txt",
     mimeType: "text/plain",

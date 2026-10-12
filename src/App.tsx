@@ -51,6 +51,7 @@ import {
   chunkDigest,
   createTransferKey,
   DEFAULT_TRANSFER_CHUNK_SIZE,
+  MAX_TRANSFER_CHUNK_SIZE,
   decryptTransferChunk,
   encryptTransferChunk,
   exportTransferKey,
@@ -58,6 +59,11 @@ import {
   streamBlobChunks,
   transferDigest,
 } from "./lib/fileTransfer";
+import {
+  MAX_BUFFERED_DOWNLOAD_SIZE,
+  expectedTransferChunks,
+  sharedFileSizeError,
+} from "./lib/fileLimits";
 import { inspectInvite, PeerMesh } from "./lib/mesh";
 import { FirebaseSignaling, getFirebaseRoomSecurity, type FirebaseRoomSecurity } from "./lib/firebaseSignaling";
 import { requiresDisplayName } from "./lib/identity";
@@ -125,7 +131,6 @@ type WakeLockSentinelLike = EventTarget & {
 
 type WorkspacePanel = "project" | "files" | "workbench" | "runner" | "activity" | "review" | "chat" | "publish";
 
-const MAX_FILE_SIZE = 1024 ** 3;
 const MAX_EDITOR_FILE_SIZE = 512 * 1024 ** 2;
 const LARGE_DOCUMENT_THRESHOLD = 5 * 1024 ** 2;
 const FILE_CHUNK_SIZE = DEFAULT_TRANSFER_CHUNK_SIZE;
@@ -859,8 +864,24 @@ export function App() {
           const transferId = String(body.transferId);
           const sink = sinks.current.get(transferId);
           if (!sink) return;
+          const chunkSize = Number(body.chunkSize);
+          const totalChunks = Number(body.totalChunks);
+          const expectedChunks = expectedTransferChunks(sink.file.size, chunkSize);
+          if (
+            chunkSize < 1024
+            || chunkSize > MAX_TRANSFER_CHUNK_SIZE
+            || expectedChunks === undefined
+            || totalChunks !== expectedChunks
+          ) {
+            const message = "The sender supplied invalid file transfer metadata.";
+            updateTransfer(setTransfers, transferId, { status: "failed", error: message });
+            sinks.current.delete(transferId);
+            if (sink.writable?.abort) await sink.writable.abort().catch(() => undefined);
+            await session.mesh.sendTo(origin, { type: "file-error", target: origin, transferId, message }).catch(() => undefined);
+            return;
+          }
           sink.key = await importTransferKey(String(body.key));
-          sink.expectedChunks = Number(body.totalChunks);
+          sink.expectedChunks = totalChunks;
           updateTransfer(setTransfers, transferId, { phase: "transferring" });
           return;
         }
@@ -1232,8 +1253,9 @@ export function App() {
   const uploadFiles = async (list: FileList) => {
     if (!session || isReadOnly) return;
     for (const file of Array.from(list)) {
-      if (file.size > MAX_FILE_SIZE) {
-        showToast(`${file.name} is larger than the 1 GB limit.`);
+      const sizeError = sharedFileSizeError(file.size);
+      if (sizeError) {
+        showToast(`${file.name}: ${sizeError}`);
         continue;
       }
       const id = crypto.randomUUID();
@@ -1250,7 +1272,9 @@ export function App() {
       }]);
       try {
         fileSources.current.set(id, file);
-        void putFile(session.roomId, id, file).catch(() => undefined);
+        if (file.size <= MAX_BUFFERED_DOWNLOAD_SIZE) {
+          void putFile(session.roomId, id, file).catch(() => undefined);
+        }
         session.files.set(id, {
           id,
           name: file.name,
@@ -1931,6 +1955,11 @@ export function App() {
 
   const downloadFile = async (file: SharedFile) => {
     if (!session) return;
+    const sizeError = sharedFileSizeError(file.size);
+    if (sizeError) {
+      showToast(`${file.name}: ${sizeError}`);
+      return;
+    }
     const local = fileSources.current.get(file.id) || await getFile(session.roomId, file.id);
     if (local) {
       const url = URL.createObjectURL(local);
@@ -1962,12 +1991,21 @@ export function App() {
     }
     const transferId = crypto.randomUUID();
     let writable: any;
+    const requiresDirectDisk = file.size > MAX_BUFFERED_DOWNLOAD_SIZE;
+    if (requiresDirectDisk && !("showSaveFilePicker" in window)) {
+      showToast("Files over 256 MB require Chrome or Edge desktop so they can stream directly to disk.");
+      return;
+    }
     if ("showSaveFilePicker" in window) {
       try {
         const handle = await (window as any).showSaveFilePicker({ suggestedName: file.name });
         writable = await handle.createWritable();
       } catch (error) {
         if ((error as DOMException).name === "AbortError") return;
+        if (requiresDirectDisk) {
+          showToast("A writable destination is required for files over 256 MB.");
+          return;
+        }
       }
     }
     sinks.current.set(transferId, {
@@ -2636,7 +2674,7 @@ export function App() {
           <div className="drop-overlay">
             <span><Icon name="upload" /></span>
             <strong>Drop files to share</strong>
-            <small>Any file type, up to 1 GB each</small>
+            <small>Any file type, up to 10 GB each</small>
           </div>
         )}
       </div>
@@ -3009,6 +3047,12 @@ async function sendFile(
   const meta = session.files.get(fileId);
   if (!file || !meta) {
     await session.mesh.send({ type: "file-error", target, transferId, message: "File is not available." });
+    return;
+  }
+  const sizeError = sharedFileSizeError(file.size);
+  if (sizeError || meta.size !== file.size) {
+    const message = sizeError || "The shared file no longer matches its advertised size.";
+    await session.mesh.send({ type: "file-error", target, transferId, message });
     return;
   }
   setTransfers((current) => [

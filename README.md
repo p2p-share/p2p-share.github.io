@@ -163,6 +163,8 @@ The application accepts individual files up to exactly 1 GiB. Newly shared files
 
 Shared-file metadata is synchronized through the room document, while file bytes move only when a peer requests them. Each receiver gets an independent direct binary stream, allowing multiple peers to download concurrently without broadcasting payloads through the room mesh. Every stream uses a unique AES-256-GCM key, authenticated chunk ordering, SHA-256 chunk and transfer verification, and a final receiver acknowledgement. Files cached in IndexedDB advertise the receiving peer as an additional provider, so later requests can use any online provider. A download streamed directly to a user-selected filesystem destination is not advertised because the browser no longer controls or can re-open that file.
 
+Direct file sharing accepts individual files up to 10 GiB. Files over 256 MiB are not copied into browser memory or IndexedDB: receiving them requires a desktop browser with the File System Access save picker (such as Chrome or Edge), and bytes are decrypted, verified, and written incrementally to the selected destination. Keep the source tab open for large files because device-backed upload references do not survive a page reload.
+
 The collaborative editor is intended for text documents. Large or binary content should be shared through the file panel rather than inserted into the editor.
 
 ### Large text documents
