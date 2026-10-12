@@ -129,11 +129,11 @@ const editorPalettes: Record<EditorThemeMode, {
 }> = {
   light: {
     dark: false, background: "#ffffff", foreground: "#27272a", gutter: "#ffffff",
-    gutterText: "#71717a", activeLine: "#f4f4f5", selection: "#d8d1ff", cursor: "#7457f5",
+    gutterText: "#71717a", activeLine: "#f4f4f5", selection: "#bfdbfe", cursor: "#2563eb",
   },
   dark: {
     dark: true, background: "#111113", foreground: "#e4e4e7", gutter: "#111113",
-    gutterText: "#71717a", activeLine: "#18181b", selection: "#44368a", cursor: "#8b7cf6",
+    gutterText: "#71717a", activeLine: "#18181b", selection: "#1e3a8a", cursor: "#60a5fa",
   },
   contrast: {
     dark: true, background: "#000000", foreground: "#ffffff", gutter: "#000000",

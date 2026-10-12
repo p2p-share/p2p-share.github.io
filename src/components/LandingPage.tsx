@@ -142,7 +142,7 @@ export function LandingPage({
             <header><span /><span /><span /><b>realtime-demo.ts</b><em>3 peers</em></header>
             <div className="product-body">
               <aside><strong>PROJECT</strong><span className="selected"><Icon name="file" />realtime-demo.ts</span><span><Icon name="file" />server.py</span><span><Icon name="file" />README.md</span></aside>
-              <pre><code><i>1</i><span className="token-purple">type</span> Room = {"{"}<br/><i>2</i>  peers: <span className="token-blue">Peer</span>[];<br/><i>3</i>  encrypted: <span className="token-purple">true</span>;<br/><i>4</i>{"}"};<br/><i>5</i><br/><i>6</i><span className="token-purple">await</span> room.<span className="token-blue">collaborate</span>();<br/><i>7</i><span className="token-green">// Your code stays with your peers.</span></code></pre>
+              <pre><code><i>1</i><span className="token-keyword">type</span> Room = {"{"}<br/><i>2</i>  peers: <span className="token-blue">Peer</span>[];<br/><i>3</i>  encrypted: <span className="token-keyword">true</span>;<br/><i>4</i>{"}"};<br/><i>5</i><br/><i>6</i><span className="token-keyword">await</span> room.<span className="token-blue">collaborate</span>();<br/><i>7</i><span className="token-green">// Your code stays with your peers.</span></code></pre>
             </div>
             <footer><span><i />Connected</span><span>TypeScript</span><span>AES-256-GCM</span></footer>
           </div>

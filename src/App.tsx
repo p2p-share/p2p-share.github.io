@@ -23,6 +23,7 @@ import {
   ACCENT_THEMES,
   APP_THEMES,
   EDITOR_THEMES,
+  storedAccentChoice,
   storedChoice,
   type AccentTheme,
   type AppTheme,
@@ -131,7 +132,7 @@ const TRANSFER_CRYPTO_PIPELINE = 4;
 const PROGRESS_UPDATE_INTERVAL_MS = 120;
 const STREAM_IMPORT_ORIGIN = "stream-import";
 const ROOM_PASSWORD_MARKER = "p2p-share-room-password-v1";
-const palette = ["#7c5cff", "#12b981", "#f59f0b", "#ee5d7b", "#2e90fa", "#a855f7"];
+const palette = ["#2563eb", "#0f766e", "#12b981", "#f59f0b", "#e14b3b", "#0891b2"];
 
 function newRoomId() {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -266,7 +267,7 @@ export function App() {
   );
   const dark = appTheme === "dark";
   const [accentTheme, setAccentTheme] = useState<AccentTheme>(() =>
-    storedChoice(localStorage.getItem("sharecode:accent-theme"), ACCENT_THEMES, "violet"),
+    storedAccentChoice(localStorage.getItem("sharecode:accent-theme")),
   );
   const [fontSize, setFontSize] = useState(() =>
     Math.min(20, Math.max(12, Number(localStorage.getItem("sharecode:font-size")) || 14)),

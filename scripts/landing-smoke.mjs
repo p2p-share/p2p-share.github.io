@@ -26,6 +26,7 @@ for (const [label, viewport] of Object.entries({
   }
   if (errors.length) throw new Error(`${label} landing errors: ${errors.join(" | ")}`);
   results.push({ label, featureCount, dimensions });
+  await page.screenshot({ path: `dist/landing-smoke-${label}.png`, fullPage: true });
   await page.close();
 }
 

@@ -19,7 +19,7 @@ describe("multi-peer collaboration", () => {
       id: "message-a",
       peerId: "peer-a",
       sender: "Alex",
-      color: "#7c5cff",
+      color: "#2563eb",
       text: "Ready to review",
       sentAt: 1,
     }]);

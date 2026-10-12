@@ -4,8 +4,8 @@
   background: #fafafa;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --violet: #7457f5;
-  --violet-hover: #6447e5;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
   --green: #12b981;
   --danger: #e5484d;
 }
@@ -43,7 +43,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--violet);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -78,23 +78,28 @@ textarea:focus-visible {
 }
 
 .app[data-accent="blue"] {
-  --violet: #2563eb;
-  --violet-hover: #1d4ed8;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+}
+
+.app[data-accent="teal"] {
+  --accent: #0f766e;
+  --accent-hover: #115e59;
 }
 
 .app[data-accent="emerald"] {
-  --violet: #047857;
-  --violet-hover: #065f46;
+  --accent: #047857;
+  --accent-hover: #065f46;
 }
 
-.app[data-accent="rose"] {
-  --violet: #e11d48;
-  --violet-hover: #be123c;
+.app[data-accent="coral"] {
+  --accent: #e14b3b;
+  --accent-hover: #bd352b;
 }
 
 .app[data-accent="amber"] {
-  --violet: #c2410c;
-  --violet-hover: #9a3412;
+  --accent: #c2410c;
+  --accent-hover: #9a3412;
 }
 
 .topbar {
@@ -110,7 +115,7 @@ textarea:focus-visible {
 
 .app.light .topbar {
   color: var(--text);
-  background: color-mix(in srgb, var(--raised) 94%, var(--violet));
+  background: color-mix(in srgb, var(--raised) 94%, var(--accent));
   border-bottom-color: var(--border);
   box-shadow: 0 1px 0 rgb(24 24 27 / 3%);
 }
@@ -163,7 +168,7 @@ textarea:focus-visible {
   background: #0c0c11;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 10px;
-  box-shadow: 0 4px 14px rgb(71 52 180 / 20%), inset 0 1px 0 rgb(255 255 255 / 8%);
+  box-shadow: 0 4px 14px rgb(37 99 235 / 18%), inset 0 1px 0 rgb(255 255 255 / 8%);
 }
 
 .brand-mark img {
@@ -282,7 +287,7 @@ textarea:focus-visible {
   height: 36px;
   padding: 0 15px;
   color: #fff;
-  background: var(--violet);
+  background: var(--accent);
   border-radius: 7px;
   font-weight: 600;
   font-size: 13px;
@@ -290,7 +295,7 @@ textarea:focus-visible {
 
 .share-button:hover,
 .primary-button:hover {
-  background: var(--violet-hover);
+  background: var(--accent-hover);
 }
 
 .new-room-header {
@@ -309,8 +314,8 @@ textarea:focus-visible {
 }
 
 .new-room-header:hover {
-  color: var(--violet);
-  border-color: color-mix(in srgb, var(--violet) 45%, var(--border));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
 .new-room-header svg {
@@ -470,8 +475,8 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  color: var(--violet);
-  background: rgb(116 87 245 / 10%);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 6px;
 }
 
@@ -514,7 +519,7 @@ textarea:focus-visible {
 .progress span {
   display: block;
   height: 100%;
-  background: var(--violet);
+  background: var(--accent);
   transition: width 100ms linear;
 }
 
@@ -698,7 +703,7 @@ textarea:focus-visible {
 }
 
 .language-options button.selected {
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .language-options button svg {
@@ -746,7 +751,7 @@ textarea:focus-visible {
 .import-progress progress {
   width: 100%;
   height: 6px;
-  accent-color: var(--violet);
+  accent-color: var(--accent);
 }
 
 .app.importing .editor-host {
@@ -921,7 +926,7 @@ textarea:focus-visible {
 
 .primary-button {
   color: white;
-  background: var(--violet);
+  background: var(--accent);
 }
 
 .primary-button svg,
@@ -1065,7 +1070,7 @@ textarea:focus-visible {
 }
 
 .toggle.on {
-  background: var(--violet);
+  background: var(--accent);
 }
 
 .toggle.on span {
@@ -1133,7 +1138,7 @@ textarea:focus-visible {
   overflow-x: hidden;
   color: #e8eaf2;
   background:
-    radial-gradient(circle at 78% 10%, rgb(91 76 255 / 18%), transparent 30rem),
+    radial-gradient(circle at 78% 10%, rgb(14 165 233 / 16%), transparent 30rem),
     radial-gradient(circle at 8% 35%, rgb(18 185 129 / 9%), transparent 27rem),
     #08090d;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
@@ -1192,10 +1197,10 @@ textarea:focus-visible {
 .landing-nav-cta,
 .landing-primary,
 .landing-cta button {
-  border: 1px solid #7467ff;
+  border: 1px solid #38bdf8;
   color: #fff;
-  background: linear-gradient(135deg, #725cff, #5944e9);
-  box-shadow: 0 9px 30px rgb(91 68 233 / 25%);
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+  box-shadow: 0 9px 30px rgb(8 145 178 / 24%);
 }
 
 .landing-nav-cta {
@@ -1220,7 +1225,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #a99fff;
+  color: #7dd3fc;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: .12em;
@@ -1400,7 +1405,7 @@ textarea:focus-visible {
   user-select: none;
 }
 
-.token-purple { color: #c298ff; }
+.token-keyword { color: #38bdf8; }
 .token-blue { color: #6fcaff; }
 .token-green { color: #65c99a; }
 
@@ -1453,7 +1458,7 @@ textarea:focus-visible {
   place-items: center;
   border-radius: 50%;
   color: #fff;
-  background: #725cff;
+  background: #2563eb;
   font-size: 9px;
   font-weight: 800;
 }
@@ -1483,7 +1488,7 @@ textarea:focus-visible {
   gap: clamp(34px, 6vw, 76px);
   overflow: hidden;
   background:
-    radial-gradient(circle at 8% 15%, rgb(103 84 237 / 15%), transparent 37%),
+    radial-gradient(circle at 8% 15%, rgb(8 145 178 / 15%), transparent 37%),
     linear-gradient(135deg, rgb(255 255 255 / 5%), rgb(255 255 255 / 2%));
 }
 
@@ -1531,7 +1536,7 @@ textarea:focus-visible {
   font-weight: 650;
 }
 
-.room-benefits svg { width: 12px; color: #8b7fff; }
+.room-benefits svg { width: 12px; color: #22d3ee; }
 
 .landing-room-workspace {
   min-width: 0;
@@ -1606,8 +1611,8 @@ textarea:focus-visible {
 }
 
 .room-input:focus-within {
-  border-color: #7567ff;
-  box-shadow: 0 0 0 3px rgb(117 103 255 / 13%);
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgb(14 165 233 / 14%);
 }
 
 .room-input svg { width: 14px; flex: 0 0 auto; color: #696e7c; }
@@ -1639,7 +1644,7 @@ textarea:focus-visible {
 .room-url-preview b {
   min-width: 0;
   overflow: hidden;
-  color: #9f96ff;
+  color: #7dd3fc;
   font-weight: 650;
   text-overflow: ellipsis;
 }
@@ -1662,8 +1667,8 @@ textarea:focus-visible {
   border: 0;
   border-radius: 8px;
   color: #fff;
-  background: linear-gradient(135deg, #755fff, #5d4bdd);
-  box-shadow: 0 8px 22px rgb(93 75 221 / 22%);
+  background: linear-gradient(135deg, #2563eb, #0f766e);
+  box-shadow: 0 8px 22px rgb(8 145 178 / 20%);
   font-size: 11px;
   font-weight: 800;
 }
@@ -1719,10 +1724,10 @@ textarea:focus-visible {
   height: 38px;
   display: grid;
   place-items: center;
-  border: 1px solid #3e3a68;
+  border: 1px solid #274665;
   border-radius: 9px;
-  color: #b0a8ff;
-  background: #211e39;
+  color: #7dd3fc;
+  background: #102a43;
 }
 
 .feature-grid svg { width: 18px; }
@@ -1835,14 +1840,14 @@ textarea:focus-visible {
 
 .flow-peer svg {
   width: 27px;
-  color: #9f94ff;
+  color: #7dd3fc;
 }
 
 .privacy-flow > i {
   width: 100%;
   height: 1px;
   position: relative;
-  background: linear-gradient(90deg, #725cff, #12b981);
+  background: linear-gradient(90deg, #2563eb, #12b981);
 }
 
 .privacy-flow > i::after {
@@ -1887,12 +1892,12 @@ textarea:focus-visible {
   width: min(900px, calc(100% - 40px));
   margin: 130px auto 100px;
   padding: 70px 30px;
-  border: 1px solid #332e64;
+  border: 1px solid #164e63;
   border-radius: 19px;
   text-align: center;
   background:
-    radial-gradient(circle at 50% 100%, rgb(114 92 255 / 25%), transparent 65%),
-    #11101a;
+    radial-gradient(circle at 50% 100%, rgb(8 145 178 / 24%), transparent 65%),
+    #0b1620;
 }
 
 .landing-cta img { width: 48px; height: 48px; }
@@ -2260,7 +2265,7 @@ textarea:focus-visible {
   overflow: hidden;
   color: var(--text);
   background:
-    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--violet) 8%, transparent), transparent 34%),
+    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 34%),
     var(--panel);
   border-right: 0 solid var(--border);
   transition: width 180ms ease, flex-basis 180ms ease, border-width 180ms ease;
@@ -2282,8 +2287,8 @@ textarea:focus-visible {
   gap: 3px;
   margin: 0 12px 10px;
   padding: 12px;
-  background: color-mix(in srgb, var(--raised) 84%, var(--violet));
-  border: 1px solid color-mix(in srgb, var(--border) 75%, var(--violet));
+  background: color-mix(in srgb, var(--raised) 84%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--border) 75%, var(--accent));
   border-radius: 12px;
 }
 
@@ -2334,7 +2339,7 @@ textarea:focus-visible {
 .project-footer button:hover,
 .preview-toolbar button:hover {
   color: var(--text);
-  border-color: color-mix(in srgb, var(--violet) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 
 .project-actions svg,
@@ -2365,7 +2370,7 @@ textarea:focus-visible {
 }
 
 .project-tree li.active {
-  background: color-mix(in srgb, var(--violet) 13%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
   border-radius: 7px;
 }
 
@@ -2520,7 +2525,7 @@ textarea:focus-visible {
 
 .workbench-tabs button.active {
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-color: transparent;
 }
 
@@ -2557,7 +2562,7 @@ textarea:focus-visible {
 
 .empty-tool svg {
   width: 28px;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .empty-tool strong {
@@ -2649,8 +2654,8 @@ textarea:focus-visible {
 
 .tag-list span {
   padding: 4px 6px;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 10%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 5px;
   font-size: 8px;
 }
@@ -2889,7 +2894,7 @@ textarea:focus-visible {
 
 .command-search svg {
   width: 18px;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .command-search input {
@@ -3004,8 +3009,8 @@ textarea:focus-visible {
 }
 
 .access-picker label.active {
-  border-color: var(--violet);
-  box-shadow: inset 0 0 0 1px var(--violet);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .access-picker input {
@@ -3016,7 +3021,7 @@ textarea:focus-visible {
 .access-picker svg {
   width: 16px;
   flex: 0 0 auto;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .access-picker label span {
@@ -3225,7 +3230,7 @@ textarea:focus-visible {
 .replying {
   display: flex;
   justify-content: space-between;
-  color: var(--violet);
+  color: var(--accent);
   font-size: 9px;
 }
 
@@ -3266,8 +3271,8 @@ textarea:focus-visible {
 .review-thread > header b,
 .line-link {
   padding: 3px 5px;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 12%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: 4px;
   font-size: 7px;
 }
@@ -3284,7 +3289,7 @@ textarea:focus-visible {
 .review-reply {
   margin: 7px 0 7px 12px;
   padding: 7px 8px;
-  border-left: 2px solid var(--violet);
+  border-left: 2px solid var(--accent);
 }
 
 .review-reply strong {
@@ -3366,8 +3371,8 @@ textarea:focus-visible {
 }
 
 .visibility-options button.active {
-  color: var(--violet);
-  border-color: var(--violet);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .visibility-options svg {
@@ -3468,7 +3473,7 @@ textarea:focus-visible {
 .source-link a {
   max-width: 100%;
   overflow: hidden;
-  color: var(--violet);
+  color: var(--accent);
   font-size: 9px;
   text-overflow: ellipsis;
 }
@@ -3545,7 +3550,7 @@ textarea:focus-visible {
 .panel-empty svg {
   width: 25px;
   margin-bottom: 10px;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .panel-empty strong {
@@ -3601,9 +3606,9 @@ textarea:focus-visible {
   gap: 6px;
   margin-top: 8px;
   padding: 6px 7px;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 9%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--violet) 24%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
   border-radius: 6px;
   font: 9px/1.3 "SFMono-Regular", Consolas, monospace;
 }
@@ -3791,7 +3796,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-radius: 16px;
 }
 
@@ -3831,7 +3836,7 @@ textarea:focus-visible {
   min-height: 170px;
   position: relative;
   overflow: hidden;
-  background: radial-gradient(circle, #252536, #0b0b10);
+  background: radial-gradient(circle, #122333, #0b0b10);
   border-radius: 8px;
 }
 
@@ -4080,7 +4085,7 @@ body,
   justify-content: center;
   color: var(--text);
   background: color-mix(in srgb, var(--raised) 88%, transparent);
-  border: 2px dashed var(--violet);
+  border: 2px dashed var(--accent);
   border-radius: 14px;
   backdrop-filter: blur(10px);
   pointer-events: none;
@@ -4093,7 +4098,7 @@ body,
   place-items: center;
   margin-bottom: 12px;
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-radius: 14px;
 }
 
@@ -4192,9 +4197,9 @@ body,
 
 .theme-option:hover,
 .theme-option.selected {
-  color: var(--violet);
-  border-color: color-mix(in srgb, var(--violet) 55%, var(--border));
-  background: color-mix(in srgb, var(--violet) 9%, var(--raised));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--raised));
 }
 
 .theme-option svg {
@@ -4231,10 +4236,10 @@ body,
   border-color: var(--swatch);
 }
 
-.accent-option[data-colour="violet"] { --swatch: #7457f5; }
 .accent-option[data-colour="blue"] { --swatch: #2563eb; }
+.accent-option[data-colour="teal"] { --swatch: #0f766e; }
 .accent-option[data-colour="emerald"] { --swatch: #047857; }
-.accent-option[data-colour="rose"] { --swatch: #e11d48; }
+.accent-option[data-colour="coral"] { --swatch: #e14b3b; }
 .accent-option[data-colour="amber"] { --swatch: #c2410c; }
 
 .dialog-actions {
@@ -4408,7 +4413,7 @@ body,
 
   .mobile-nav .mobile-share {
     color: white;
-    background: var(--violet);
+    background: var(--accent);
   }
 
   .dialog-backdrop {
@@ -4593,8 +4598,8 @@ body,
   display: grid;
   place-items: center;
   margin-bottom: 10px;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 14%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 13px;
 }
 
@@ -4659,7 +4664,7 @@ body,
 
 .chat-message.mine p {
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-color: transparent;
   border-radius: 11px 4px 11px 11px;
 }
@@ -4686,7 +4691,7 @@ body,
   place-items: center;
   flex: 0 0 auto;
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border: 0;
   border-radius: 9px;
 }
@@ -4724,7 +4729,7 @@ body,
   place-items: center;
   flex: 0 0 auto;
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-radius: 50%;
   font-size: 8px;
 }
@@ -4734,8 +4739,8 @@ body,
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: color-mix(in srgb, var(--violet) 9%, var(--raised));
-  border: 1px solid color-mix(in srgb, var(--violet) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--raised));
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
   border-radius: 10px;
 }
 
@@ -4746,7 +4751,7 @@ body,
   place-items: center;
   flex: 0 0 auto;
   color: white;
-  background: var(--violet);
+  background: var(--accent);
   border-radius: 10px;
 }
 
@@ -4777,7 +4782,7 @@ body,
 }
 
 .name-field:focus-within {
-  border-color: var(--violet);
+  border-color: var(--accent);
 }
 
 .name-field .random-name-button {
@@ -4785,9 +4790,9 @@ body,
   gap: 6px;
   margin: 4px;
   padding: 0 10px;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 10%, var(--raised));
-  border: 1px solid color-mix(in srgb, var(--violet) 24%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--raised));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
   border-radius: 6px;
   font-size: 10px;
   font-weight: 700;
@@ -4796,8 +4801,8 @@ body,
 
 .name-field .random-name-button:hover {
   color: white;
-  background: var(--violet);
-  border-color: var(--violet);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .name-field .random-name-button svg {
@@ -4903,8 +4908,8 @@ body,
   margin: 0 12px 10px;
   padding: 10px 12px;
   color: var(--muted);
-  background: color-mix(in srgb, var(--violet) 5%, var(--raised));
-  border: 1px dashed color-mix(in srgb, var(--violet) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--raised));
+  border: 1px dashed color-mix(in srgb, var(--accent) 60%, var(--border));
   border-radius: 11px;
   text-align: left;
 }
@@ -4912,14 +4917,14 @@ body,
 .file-dropzone:hover,
 .file-dropzone.dragging {
   color: var(--text);
-  background: color-mix(in srgb, var(--violet) 12%, var(--raised));
-  border-color: var(--violet);
+  background: color-mix(in srgb, var(--accent) 12%, var(--raised));
+  border-color: var(--accent);
 }
 
 .file-dropzone > svg {
   width: 23px;
   flex: 0 0 auto;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .file-dropzone > span {
@@ -5139,7 +5144,7 @@ body,
 .file-transfer-inline > div i {
   height: 100%;
   display: block;
-  background: linear-gradient(90deg, var(--violet), #2e90fa);
+  background: linear-gradient(90deg, var(--accent), #2e90fa);
   border-radius: inherit;
   transition: width 120ms linear;
 }
@@ -5257,7 +5262,7 @@ body,
 
 .file-preview-unavailable svg {
   width: 38px;
-  color: var(--violet);
+  color: var(--accent);
 }
 
 .file-preview-unavailable strong {
@@ -5299,13 +5304,13 @@ body,
 .toolbar-action[aria-pressed="true"],
 .mobile-editor-actions button[aria-pressed="true"],
 .mobile-files[aria-pressed="true"] {
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 14%, var(--raised));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet) 38%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 .mobile-nav button.active {
-  color: var(--violet);
+  color: var(--accent);
 }
 
 @media (min-width: 1051px) {
@@ -5425,8 +5430,8 @@ body,
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  color: var(--violet);
-  background: color-mix(in srgb, var(--violet) 13%, var(--raised));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, var(--raised));
   border-radius: 9px;
 }
 
@@ -5437,8 +5442,8 @@ body,
 
 .signal-card {
   padding: 12px;
-  background: color-mix(in srgb, var(--raised) 92%, var(--violet));
-  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--violet));
+  background: color-mix(in srgb, var(--raised) 92%, var(--accent));
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--accent));
   border-radius: 12px;
 }
 
@@ -5540,8 +5545,8 @@ body,
 
 .invite-steps span.active {
   color: var(--text);
-  background: color-mix(in srgb, var(--violet) 11%, var(--raised));
-  border-color: color-mix(in srgb, var(--violet) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 11%, var(--raised));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 .invite-steps span.done b {
